@@ -164,6 +164,7 @@ function parseSubagents(sessionDir) {
     try { meta = JSON.parse(fs.readFileSync(path.join(subagentsDir, metaFile), 'utf8')); } catch {}
 
     const parsed = parseAgentFile(jsonlPath);
+    const { skills } = collectToolsUsed(jsonlPath);
     agents.push({
       agentId,
       meta,
@@ -173,6 +174,7 @@ function parseSubagents(sessionDir) {
       totalUsage: parsed.totalUsage,
       totalCost: parsed.totalCost,
       model: parsed.model,
+      skillsUsed: [...skills],
     });
   }
 
@@ -278,6 +280,25 @@ function getAllProjects() {
   return projects;
 }
 
+function collectToolsUsed(filePath) {
+  const mcps = new Set();
+  const skills = new Set();
+  for (const entry of parseLines(filePath)) {
+    if (entry.type !== 'assistant') continue;
+    for (const block of (entry.message?.content || [])) {
+      if (!block || block.type !== 'tool_use') continue;
+      if (block.name.startsWith('mcp__')) {
+        const parts = block.name.split('__');
+        const server = (parts[1] || '').replace(/^claude_ai_/, '').replace(/_/g, ' ');
+        if (server) mcps.add(server);
+      } else if (block.name === 'Skill' && block.input?.skill) {
+        skills.add(block.input.skill);
+      }
+    }
+  }
+  return { mcps, skills };
+}
+
 function getSessionDetail(dirName, sessionFile) {
   const filePath = path.join(PROJECTS_DIR, dirName, sessionFile);
   if (!fs.existsSync(filePath)) throw new Error('Session not found');
@@ -297,7 +318,22 @@ function getSessionDetail(dirName, sessionFile) {
     }
   }
 
-  return { ...session, agents };
+  // Aggregate MCPs and skills from main session + all subagent files
+  const allMcps = new Set();
+  const allSkills = new Set();
+  const filesToScan = [filePath];
+  const subagentsDir = path.join(sessionDir, 'subagents');
+  if (fs.existsSync(subagentsDir)) {
+    fs.readdirSync(subagentsDir).filter(f => f.endsWith('.jsonl'))
+      .forEach(f => filesToScan.push(path.join(subagentsDir, f)));
+  }
+  for (const f of filesToScan) {
+    const { mcps, skills } = collectToolsUsed(f);
+    mcps.forEach(m => allMcps.add(m));
+    skills.forEach(s => allSkills.add(s));
+  }
+
+  return { ...session, agents, sessionMcps: [...allMcps], sessionSkills: [...allSkills] };
 }
 
 function getAgentDetail(dirName, sessionFile, agentId) {

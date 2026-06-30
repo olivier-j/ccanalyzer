@@ -276,6 +276,20 @@ async function loadSessionDetail(dirNameEncoded, fileEncoded) {
     state.currentProject = state.projects.find(p => p.dirName === dirName);
   }
 
+  // Build map: message uuid → skills used by agents spawned from that message
+  state.agentSkillsByUuid = {};
+  if (session.agents) {
+    for (const agent of session.agents) {
+      if (agent.spawnedByUuid && agent.skillsUsed?.length) {
+        const existing = state.agentSkillsByUuid[agent.spawnedByUuid] || [];
+        for (const s of agent.skillsUsed) {
+          if (!existing.includes(s)) existing.push(s);
+        }
+        state.agentSkillsByUuid[agent.spawnedByUuid] = existing;
+      }
+    }
+  }
+
   setBreadcrumb([state.currentProject?.path || dirName, session.title]);
   renderSessionDetail(session, dirName, file);
 }
@@ -288,28 +302,12 @@ function renderSessionDetail(session, dirName, file) {
     ? new Date(lastTimestamp) - new Date(firstTimestamp) : null;
   const hasAgents = agents && agents.length > 0;
 
-  // Aggregate MCPs and skills across all messages
-  const sessionMcps = new Set();
-  const sessionSkills = new Set();
-  for (const msg of session.messages) {
-    if (msg.type !== 'assistant') continue;
-    const content = Array.isArray(msg.content) ? msg.content : [];
-    for (const block of content) {
-      if (!block || block.type !== 'tool_use') continue;
-      if (block.name.startsWith('mcp__')) {
-        const parts = block.name.split('__');
-        const server = (parts[1] || '').replace(/^claude_ai_/, '').replace(/_/g, ' ');
-        if (server) sessionMcps.add(server);
-      } else if (block.name === 'Skill' && block.input?.skill) {
-        sessionSkills.add(block.input.skill);
-      }
-    }
-  }
-  const mcpBar = sessionMcps.size > 0
-    ? `<div class="session-tools-bar">${[...sessionMcps].map(s => `<span class="usage-chip"><span class="tag-mcp">mcp</span>${escHtml(s)}</span>`).join('')}</div>`
+  // MCPs and skills pre-aggregated server-side (main + all subagents)
+  const mcpBar = session.sessionMcps?.length
+    ? `<div class="session-tools-bar">${session.sessionMcps.map(s => `<span class="usage-chip"><span class="tag-mcp">mcp</span>${escHtml(s)}</span>`).join('')}</div>`
     : '';
-  const skillBar = sessionSkills.size > 0
-    ? `<div class="session-tools-bar">${[...sessionSkills].map(s => `<span class="usage-chip"><span class="tag-skill">skill</span>${escHtml(s)}</span>`).join('')}</div>`
+  const skillBar = session.sessionSkills?.length
+    ? `<div class="session-tools-bar">${session.sessionSkills.map(s => `<span class="usage-chip"><span class="tag-skill">skill</span>${escHtml(s)}</span>`).join('')}</div>`
     : '';
 
   container.innerHTML = `
@@ -1000,6 +998,8 @@ function renderMessage(m, i, ctx, activeAgent) {
       ${m.model ? `<span class="usage-chip" style="color:var(--accent)">${escHtml(modelShort(m.model))}</span>` : ''}
       ${mcpServers.map(s => `<span class="usage-chip"><span class="tag-mcp">mcp</span>${escHtml(s)}</span>`).join('')}
       ${skillsUsed.map(s => `<span class="usage-chip"><span class="tag-skill">skill</span>${escHtml(s)}</span>`).join('')}
+      ${activeAgent?.kind === 'skill' && !skillsUsed.includes(activeAgent.name) ? `<span class="usage-chip"><span class="tag-skill">skill</span>${escHtml(activeAgent.name)}</span>` : ''}
+      ${(state.agentSkillsByUuid?.[m.uuid] || []).filter(s => !skillsUsed.includes(s)).map(s => `<span class="usage-chip"><span class="tag-skill">skill</span>${escHtml(s)}</span>`).join('')}
     </div>`;
   }
 
