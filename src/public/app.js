@@ -407,7 +407,7 @@ function buildGanttSVG(session) {
 
   // SVG layout
   const SVG_W = 1000;
-  const LABEL_W = 150;
+  const LABEL_W = 120;
   const PAD_R = 16;
   const CHART_W = SVG_W - LABEL_W - PAD_R;
   const USER_H = 24;
@@ -480,8 +480,11 @@ function buildGanttSVG(session) {
     const y = currentY + i * (AGENT_H + 3);
     const cy = y + AGENT_H / 2;
 
-    const label = (agent.meta?.description || agent.agentId || '').slice(0, 22);
-    parts.push(`<text x="${LABEL_W - 8}" y="${cy + 4}" text-anchor="end" fill="#5a6478" font-size="9.5" font-family="system-ui">${escHtml(label)}</text>`);
+    const label = agent.meta?.description || agent.agentId || '';
+    const maxLabelW = LABEL_W - 10;
+    const approxW = label.length * 5.5;
+    const textLengthAttr = approxW > maxLabelW ? ` textLength="${maxLabelW}" lengthAdjust="spacingAndGlyphs"` : '';
+    parts.push(`<text x="${LABEL_W - 8}" y="${cy + 4}" text-anchor="end" fill="#5a6478" font-size="9.5" font-family="system-ui"${textLengthAttr}>${escHtml(label)}</text>`);
 
     // Track bg
     parts.push(`<rect x="${LABEL_W}" y="${y}" width="${CHART_W}" height="${AGENT_H}" fill="${color}08" rx="2"/>`);
