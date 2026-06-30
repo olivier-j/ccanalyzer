@@ -130,7 +130,7 @@ function parseSessionFile(filePath, lightMode = false) {
 
   return {
     sessionId,
-    title: title || 'Session sans titre',
+    title: title || 'Untitled session',
     cwd,
     gitBranch,
     model,

@@ -11,18 +11,18 @@ const state = {
 
 /* ── Utils ── */
 const $ = id => document.getElementById(id);
-const fmt = n => n == null ? '—' : n.toLocaleString('fr-FR');
+const fmt = n => n == null ? '—' : n.toLocaleString('en-US');
 const fmtCost = v => v < 0.001 ? '<$0.001' : '$' + v.toFixed(v < 0.01 ? 4 : v < 0.1 ? 3 : 2);
-const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
-const fmtTime = iso => iso ? new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
+const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+const fmtTime = iso => iso ? new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '';
 
 function fmtRelative(iso) {
   if (!iso) return '—';
   const diff = (Date.now() - new Date(iso)) / 1000;
-  if (diff < 60) return 'à l\'instant';
-  if (diff < 3600) return `il y a ${Math.floor(diff / 60)}m`;
-  if (diff < 86400) return `il y a ${Math.floor(diff / 3600)}h`;
-  if (diff < 86400 * 7) return `il y a ${Math.floor(diff / 86400)}j`;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
   return fmtDate(iso);
 }
 
@@ -120,32 +120,32 @@ async function loadDashboard() {
   container.innerHTML = `
     <div class="page-header">
       <h1>Dashboard</h1>
-      <div class="subtitle">Analyse de l'ensemble de vos sessions Claude Code</div>
+      <div class="subtitle">Overview of all your Claude Code sessions</div>
     </div>
     <div class="stats-grid">
-      <div class="stat-card accent"><div class="label">Projets</div><div class="value">${fmt(projects.length)}</div></div>
+      <div class="stat-card accent"><div class="label">Projects</div><div class="value">${fmt(projects.length)}</div></div>
       <div class="stat-card"><div class="label">Sessions</div><div class="value">${fmt(totalSessions)}</div></div>
       <div class="stat-card"><div class="label">Messages</div><div class="value">${fmt(totalMsgs)}</div></div>
-      <div class="stat-card green"><div class="label">Coût estimé</div><div class="value">${fmtCost(totalCost)}</div></div>
+      <div class="stat-card green"><div class="label">Estimated cost</div><div class="value">${fmtCost(totalCost)}</div></div>
       <div class="stat-card">
-        <div class="label">Tokens input</div>
+        <div class="label">Input tokens</div>
         <div class="value">${fmtMillions(totalInput)}</div>
-        <div class="sub">+ ${fmtMillions(totalCacheR)} cache lus</div>
+        <div class="sub">+ ${fmtMillions(totalCacheR)} cache reads</div>
       </div>
       <div class="stat-card">
-        <div class="label">Tokens output</div>
+        <div class="label">Output tokens</div>
         <div class="value">${fmtMillions(totalOutput)}</div>
-        <div class="sub">${fmtMillions(totalCacheW)} cache écrits</div>
+        <div class="sub">${fmtMillions(totalCacheW)} cache writes</div>
       </div>
     </div>
     <div class="chart-section" style="margin-bottom:28px">
-      <h2>Activité quotidienne</h2>
+      <h2>Daily activity</h2>
       <div class="chart-container"><canvas id="activity-chart"></canvas></div>
     </div>
-    <div class="section-title" style="margin-bottom:12px">Projets <span style="font-weight:400;color:var(--text3)">(${projects.length})</span></div>
+    <div class="section-title" style="margin-bottom:12px">Projects <span style="font-weight:400;color:var(--text3)">(${projects.length})</span></div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Projet</th><th>Chemin</th><th>Sessions</th><th>Messages</th><th>Input</th><th>Output</th><th>Coût</th><th>Dernière activité</th></tr></thead>
+        <thead><tr><th>Project</th><th>Path</th><th>Sessions</th><th>Messages</th><th>Input</th><th>Output</th><th>Cost</th><th>Last activity</th></tr></thead>
         <tbody>
           ${projects.map(p => `
             <tr onclick="loadSessions('${encodeURIComponent(p.dirName)}')">
@@ -223,13 +223,13 @@ async function loadSessions(dirNameEncoded) {
     <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))">
       <div class="stat-card"><div class="label">Sessions</div><div class="value">${fmt(project.sessionCount)}</div></div>
       <div class="stat-card"><div class="label">Messages</div><div class="value">${fmt(project.totalMessages)}</div></div>
-      <div class="stat-card green"><div class="label">Coût total</div><div class="value">${fmtCost(project.totalCost)}</div></div>
-      <div class="stat-card accent"><div class="label">Tokens input</div><div class="value">${fmtMillions(project.totalUsage.input)}</div></div>
+      <div class="stat-card green"><div class="label">Total cost</div><div class="value">${fmtCost(project.totalCost)}</div></div>
+      <div class="stat-card accent"><div class="label">Input tokens</div><div class="value">${fmtMillions(project.totalUsage.input)}</div></div>
     </div>
     <div class="section-title" style="margin-bottom:12px">Sessions</div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Titre</th><th>Modèle</th><th>Messages</th><th>Agents</th><th>Input</th><th>Output</th><th>Coût</th><th>Date</th></tr></thead>
+        <thead><tr><th>Title</th><th>Model</th><th>Messages</th><th>Agents</th><th>Input</th><th>Output</th><th>Cost</th><th>Date</th></tr></thead>
         <tbody>
           ${project.sessions.map(s => `
             <tr onclick="loadSessionDetail('${encodeURIComponent(dirName)}','${encodeURIComponent(s.file)}','${encodeURIComponent(s.projectDirName || dirName)}')">
@@ -256,7 +256,7 @@ async function loadSessionDetail(dirNameEncoded, fileEncoded, apiDirNameEncoded)
   pushUrl({ project: dirName, session: file });
   showView('session-detail');
   const container = $('view-session-detail');
-  container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">Chargement...</div>';
+  container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">Loading...</div>';
   show(true);
 
   // Resolve the actual dir where the session file lives (may differ for merged worktrees)
@@ -274,7 +274,7 @@ async function loadSessionDetail(dirNameEncoded, fileEncoded, apiDirNameEncoded)
   try {
     session = await api(`/api/projects/${encodeURIComponent(apiDirName)}/sessions/${encodeURIComponent(file)}`);
   } catch (e) {
-    container.innerHTML = `<div style="padding:40px;color:var(--red)">Erreur: ${escHtml(e.message)}</div>`;
+    container.innerHTML = `<div style="padding:40px;color:var(--red)">Error: ${escHtml(e.message)}</div>`;
     show(false);
     return;
   }
@@ -327,22 +327,22 @@ function renderSessionDetail(session, dirName, file) {
       <h1 style="font-size:18px">${escHtml(session.title)}</h1>
     </div>
     <div class="session-meta">
-      <div class="meta-item"><div class="meta-label">Modèle</div><div class="meta-value accent">${escHtml(modelShort(model))}</div></div>
-      <div class="meta-item"><div class="meta-label">Début</div><div class="meta-value">${fmtDate(firstTimestamp)} ${fmtTime(firstTimestamp)}</div></div>
-      <div class="meta-item"><div class="meta-label">Durée</div><div class="meta-value">${durationMs != null ? fmtDuration(durationMs) : '—'}</div></div>
+      <div class="meta-item"><div class="meta-label">Model</div><div class="meta-value accent">${escHtml(modelShort(model))}</div></div>
+      <div class="meta-item"><div class="meta-label">Start</div><div class="meta-value">${fmtDate(firstTimestamp)} ${fmtTime(firstTimestamp)}</div></div>
+      <div class="meta-item"><div class="meta-label">Duration</div><div class="meta-value">${durationMs != null ? fmtDuration(durationMs) : '—'}</div></div>
       <div class="meta-item"><div class="meta-label">Messages</div><div class="meta-value">${fmt(session.messageCount)}</div></div>
       ${hasAgents ? `<div class="meta-item"><div class="meta-label">Agents</div><div class="meta-value" style="color:var(--purple)">${fmt(agents.length)}</div></div>` : ''}
-      ${cwd ? `<div class="meta-item"><div class="meta-label">Répertoire</div><div class="meta-value mono">${escHtml(cwd.replace('/home/olivier-j/', '~/'))}</div></div>` : ''}
-      ${gitBranch && gitBranch !== 'HEAD' ? `<div class="meta-item"><div class="meta-label">Branche</div><div class="meta-value mono" style="color:var(--green)">${escHtml(gitBranch)}</div></div>` : ''}
+      ${cwd ? `<div class="meta-item"><div class="meta-label">Directory</div><div class="meta-value mono">${escHtml(cwd.replace('/home/olivier-j/', '~/'))}</div></div>` : ''}
+      ${gitBranch && gitBranch !== 'HEAD' ? `<div class="meta-item"><div class="meta-label">Branch</div><div class="meta-value mono" style="color:var(--green)">${escHtml(gitBranch)}</div></div>` : ''}
     </div>
     ${mcpBar}${skillBar}
 
     <div class="token-bar">
       <div class="token-item"><div class="token-label">Input</div><div class="token-value input">${fmt(totalUsage.input)}</div></div>
       <div class="token-item"><div class="token-label">Output</div><div class="token-value output">${fmt(totalUsage.output)}</div></div>
-      <div class="token-item"><div class="token-label">Cache écrit</div><div class="token-value cache-w">${fmt(totalUsage.cache_write)}</div></div>
-      <div class="token-item"><div class="token-label">Cache lu</div><div class="token-value cache-r">${fmt(totalUsage.cache_read)}</div></div>
-      <div class="token-item" style="margin-left:auto"><div class="token-label">Coût estimé</div><div class="token-value cost">${fmtCost(totalCost)}</div></div>
+      <div class="token-item"><div class="token-label">Cache written</div><div class="token-value cache-w">${fmt(totalUsage.cache_write)}</div></div>
+      <div class="token-item"><div class="token-label">Cache read</div><div class="token-value cache-r">${fmt(totalUsage.cache_read)}</div></div>
+      <div class="token-item" style="margin-left:auto"><div class="token-label">Estimated cost</div><div class="token-value cost">${fmtCost(totalCost)}</div></div>
     </div>
 
     <!-- Timeline toggle -->
@@ -360,9 +360,9 @@ function renderSessionDetail(session, dirName, file) {
 
     ${hasAgents || subAgentMessages > 0 ? `
     <div class="filter-bar">
-      <span style="font-size:12px;color:var(--text3)">Messages :</span>
-      <button class="filter-btn active" data-filter="all" onclick="setMsgFilter('all','${encodeURIComponent(dirName)}','${encodeURIComponent(file)}')">Tous (${fmt(session.messageCount)})</button>
-      <button class="filter-btn" data-filter="main" onclick="setMsgFilter('main','${encodeURIComponent(dirName)}','${encodeURIComponent(file)}')">Thread principal (${fmt(mainAgentMessages)})</button>
+      <span style="font-size:12px;color:var(--text3)">Messages:</span>
+      <button class="filter-btn active" data-filter="all" onclick="setMsgFilter('all','${encodeURIComponent(dirName)}','${encodeURIComponent(file)}')">All (${fmt(session.messageCount)})</button>
+      <button class="filter-btn" data-filter="main" onclick="setMsgFilter('main','${encodeURIComponent(dirName)}','${encodeURIComponent(file)}')">Main thread (${fmt(mainAgentMessages)})</button>
     </div>` : ''}
 
     <div id="messages-list" class="messages-container">
@@ -388,7 +388,7 @@ const AGENT_COLORS = ['#a78bfa', '#2dd4bf', '#34d399', '#f97316', '#60a5fa', '#f
 function buildGanttSVG(session) {
   const { messages, agents } = session;
   const timeMsgs = messages.filter(m => m.timestamp && (m.type === 'user' || m.type === 'assistant'));
-  if (timeMsgs.length === 0) return '<div style="padding:20px;color:var(--text3);text-align:center">Pas de données temporelles</div>';
+  if (timeMsgs.length === 0) return '<div style="padding:20px;color:var(--text3);text-align:center">No time data</div>';
 
   const hasAgents = agents && agents.length > 0;
 
@@ -403,7 +403,7 @@ function buildGanttSVG(session) {
   }
   tMax += Math.max(5000, (tMax - tMin) * 0.02);
   const totalMs = tMax - tMin;
-  if (totalMs <= 0) return '<div style="padding:20px;color:var(--text3);text-align:center">Session instantanée</div>';
+  if (totalMs <= 0) return '<div style="padding:20px;color:var(--text3);text-align:center">Instant session</div>';
 
   // SVG layout
   const SVG_W = 1000;
@@ -463,7 +463,7 @@ function buildGanttSVG(session) {
     const color = hasAgentTool ? '#a78bfa' : '#4f8ef7';
 
     parts.push(`<rect x="${x.toFixed(1)}" y="${barY}" width="${w.toFixed(1)}" height="${barH}" fill="${color}" rx="2" opacity="0.85" class="gantt-msg" data-uuid="${escHtml(m.uuid || '')}">
-      <title>${escHtml(tools.map(t => t.name).join(', ') || 'Réponse')}</title>
+      <title>${escHtml(tools.map(t => t.name).join(', ') || 'Response')}</title>
     </rect>`);
 
     if (w > 50 && tools.length > 0) {
@@ -605,7 +605,7 @@ function showTimelineMessageDetail(session, uuid) {
       body = toolResults.map(tr => {
         const rc = Array.isArray(tr.content) ? tr.content.map(c => c.text || '').join('\n') : (tr.content || '');
         return `<div class="tool-call" style="${tr.is_error ? 'border-color:var(--red)' : ''}">
-          <div class="tool-name" style="color:${tr.is_error ? 'var(--red)' : 'var(--teal)'}">↩ résultat${tr.is_error ? ' (erreur)' : ''}</div>
+          <div class="tool-name" style="color:${tr.is_error ? 'var(--red)' : 'var(--teal)'}">↩ result${tr.is_error ? ' (error)' : ''}</div>
           <div class="tool-input">${escHtml(rc.slice(0, 800))}</div>
         </div>`;
       }).join('');
@@ -637,7 +637,7 @@ function showTimelineMessageDetail(session, uuid) {
       <span style="color:var(--text3);font-size:11px;margin-left:8px">${ts}</span>
       <button class="tl-detail-close" onclick="$('timeline-detail').classList.add('hidden')">×</button>
     </div>
-    <div class="tl-detail-body">${body || '<span style="color:var(--text3)">Contenu vide</span>'}</div>`;
+    <div class="tl-detail-body">${body || '<span style="color:var(--text3)">Empty content</span>'}</div>`;
   panel.classList.remove('hidden');
 }
 
@@ -671,7 +671,7 @@ async function showTimelineAgentDetail(session, dirName, file, agentId) {
         <button onclick="closeAgentModal()" class="modal-close-btn">×</button>
       </div>
       <div class="agent-modal-loading" id="agent-modal-body">
-        <div style="text-align:center;color:var(--text3);padding:40px">Chargement…</div>
+        <div style="text-align:center;color:var(--text3);padding:40px">Loading…</div>
       </div>
     </div>`;
   modal.style.display = 'flex';
@@ -684,14 +684,14 @@ async function showTimelineAgentDetail(session, dirName, file, agentId) {
       <div class="agent-modal-stats">
         <div class="token-item"><div class="token-label">Input</div><div class="token-value input">${fmt(detail.totalUsage.input)}</div></div>
         <div class="token-item"><div class="token-label">Output</div><div class="token-value output">${fmt(detail.totalUsage.output)}</div></div>
-        <div class="token-item"><div class="token-label">Cache lu</div><div class="token-value cache-r">${fmt(detail.totalUsage.cache_read)}</div></div>
-        <div class="token-item" style="margin-left:auto"><div class="token-label">Coût</div><div class="token-value cost">${fmtCost(detail.totalCost)}</div></div>
+        <div class="token-item"><div class="token-label">Cache read</div><div class="token-value cache-r">${fmt(detail.totalUsage.cache_read)}</div></div>
+        <div class="token-item" style="margin-left:auto"><div class="token-label">Cost</div><div class="token-value cost">${fmtCost(detail.totalCost)}</div></div>
       </div>
       <div class="agent-modal-messages">
         ${renderAgentMessages(detail.messages)}
       </div>`;
   } catch (e) {
-    $('agent-modal-body').innerHTML = `<div style="color:var(--red);padding:20px">Erreur : ${escHtml(e.message)}</div>`;
+    $('agent-modal-body').innerHTML = `<div style="color:var(--red);padding:20px">Error: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -734,18 +734,18 @@ function renderAgentSummary(detail) {
     <div class="token-bar" style="margin-bottom:16px">
       <div class="token-item"><div class="token-label">Input</div><div class="token-value input">${fmt(detail.totalUsage.input)}</div></div>
       <div class="token-item"><div class="token-label">Output</div><div class="token-value output">${fmt(detail.totalUsage.output)}</div></div>
-      <div class="token-item"><div class="token-label">Durée</div><div class="token-value" style="color:var(--text2)">${dur}</div></div>
-      <div class="token-item" style="margin-left:auto"><div class="token-label">Coût</div><div class="token-value cost">${fmtCost(detail.totalCost)}</div></div>
+      <div class="token-item"><div class="token-label">Duration</div><div class="token-value" style="color:var(--text2)">${dur}</div></div>
+      <div class="token-item" style="margin-left:auto"><div class="token-label">Cost</div><div class="token-value cost">${fmtCost(detail.totalCost)}</div></div>
     </div>
 
     ${taskText ? `
     <div class="agent-section">
-      <div class="agent-section-label">📋 Tâche</div>
+      <div class="agent-section-label">📋 Task</div>
       <div class="agent-task-text">${escHtml(taskText.slice(0, 600))}${taskText.length > 600 ? '…' : ''}</div>
     </div>` : ''}
 
     <div class="agent-section">
-      <div class="agent-section-label">⚙ Outils utilisés — ${toolCalls.length} appels</div>
+      <div class="agent-section-label">⚙ Tools used — ${toolCalls.length} calls</div>
       <div class="tool-summary-chips">
         ${Object.entries(toolCount).sort((a,b) => b[1]-a[1]).map(([name, count]) =>
           `<span class="tool-chip">${escHtml(name)}<span class="tool-chip-count">${count}</span></span>`
@@ -754,7 +754,7 @@ function renderAgentSummary(detail) {
     </div>
 
     <div class="agent-section">
-      <div class="agent-section-label">📜 Séquence des appels</div>
+      <div class="agent-section-label">📜 Call sequence</div>
       <div class="tool-sequence">
         ${toolCalls.slice(0, 60).map((t, i) => {
           const inputPreview = getToolInputPreview(t.name, t.input);
@@ -764,19 +764,19 @@ function renderAgentSummary(detail) {
             ${inputPreview ? `<span class="tool-seq-preview">${escHtml(inputPreview)}</span>` : ''}
           </div>`;
         }).join('')}
-        ${toolCalls.length > 60 ? `<div style="color:var(--text3);font-size:11px;padding:4px 0">… et ${toolCalls.length - 60} autres appels</div>` : ''}
+        ${toolCalls.length > 60 ? `<div style="color:var(--text3);font-size:11px;padding:4px 0">… and ${toolCalls.length - 60} more calls</div>` : ''}
       </div>
     </div>
 
     ${finalText ? `
     <div class="agent-section">
-      <div class="agent-section-label">✅ Résultat final</div>
+      <div class="agent-section-label">✅ Final result</div>
       <div class="agent-result-text">${escHtml(finalText.slice(0, 1200))}${finalText.length > 1200 ? '…' : ''}</div>
     </div>` : ''}
 
     <div style="padding:12px 0 4px">
       <button class="filter-btn" onclick="showAllAgentMessages(${JSON.stringify(detail.messages.length)})" style="font-size:12px">
-        Voir tous les messages (${detail.messages.length})
+        Show all messages (${detail.messages.length})
       </button>
     </div>
 
@@ -821,7 +821,7 @@ function renderAgentMessages(msgs) {
     const bodyParts = [];
     if (isUser) {
       if (isToolResult) {
-        bodyParts.push(`<div style="color:var(--text3);font-size:12px">↩ ${content.length} résultat(s) d'outils</div>`);
+        bodyParts.push(`<div style="color:var(--text3);font-size:12px">↩ ${content.length} tool result(s)</div>`);
       } else {
         const text = extractText(m.content);
         if (text) bodyParts.push(`<div class="msg-text">${escHtml(text.slice(0, 500))}</div>`);
@@ -830,7 +830,7 @@ function renderAgentMessages(msgs) {
       for (const block of content) {
         if (!block) continue;
         if (block.type === 'thinking') {
-          bodyParts.push(`<div class="thinking-block">🧠 réflexion (${block.thinking?.length || 0} chars)</div>`);
+          bodyParts.push(`<div class="thinking-block">🧠 thinking (${block.thinking?.length || 0} chars)</div>`);
         } else if (block.type === 'text' && block.text?.trim()) {
           bodyParts.push(`<div class="msg-text">${escHtml(block.text.slice(0, 800))}</div>`);
         } else if (block.type === 'tool_use') {
@@ -851,7 +851,7 @@ function renderAgentMessages(msgs) {
           ${ts ? `<span style="font-size:10px;color:var(--text3);margin-left:8px">${ts}</span>` : ''}
           <span class="msg-chevron" style="margin-left:auto">▼</span>
         </div>
-        <div class="message-body" style="padding:10px 12px">${bodyParts.join('') || '<div style="color:var(--text3);font-size:11px">vide</div>'}</div>
+        <div class="message-body" style="padding:10px 12px">${bodyParts.join('') || '<div style="color:var(--text3);font-size:11px">empty</div>'}</div>
       </div>`;
   }).join('');
 }
@@ -879,7 +879,7 @@ function renderMessages(messages, ctx) {
     if (state.msgFilter === 'main') return !m.isSidechain;
     return true;
   });
-  if (!filtered.length) return '<div class="empty"><p>Aucun message</p></div>';
+  if (!filtered.length) return '<div class="empty"><p>No messages</p></div>';
 
   // Track active skill/agent context across messages
   let activeAgent = null;
@@ -970,14 +970,14 @@ function renderMessage(m, i, ctx, activeAgent) {
           const rc = Array.isArray(block.content) ? block.content.map(c => c.text || '').join('\n') : (block.content || '');
           const isError = block.is_error;
           parts.push(`<div class="tool-call" style="${isError ? 'border-color:var(--red)' : ''}">
-            <div class="tool-name" style="color:${isError ? 'var(--red)' : 'var(--teal)'}">↩ résultat${isError ? ' (erreur)' : ''}</div>
-            <div class="tool-input">${escHtml(rc.slice(0, 2000))}${rc.length > 2000 ? '\n…(tronqué)' : ''}</div>
+            <div class="tool-name" style="color:${isError ? 'var(--red)' : 'var(--teal)'}">↩ result${isError ? ' (error)' : ''}</div>
+            <div class="tool-input">${escHtml(rc.slice(0, 2000))}${rc.length > 2000 ? '\n…(truncated)' : ''}</div>
           </div>`);
         } else if (block.type === 'text') {
           parts.push(`<div class="msg-text">${escHtml(block.text)}</div>`);
         }
       }
-      bodyHtml = parts.join('') || '<div class="msg-text" style="color:var(--text3)">(contenu vide)</div>';
+      bodyHtml = parts.join('') || '<div class="msg-text" style="color:var(--text3)">(empty content)</div>';
     }
   } else {
     const content = Array.isArray(m.content) ? m.content : [];
@@ -985,7 +985,7 @@ function renderMessage(m, i, ctx, activeAgent) {
     for (const block of content) {
       if (!block) continue;
       if (block.type === 'thinking') {
-        parts.push(`<div class="thinking-block">🧠 <em>Réflexion (${block.thinking ? block.thinking.length : 0} chars)</em></div>`);
+        parts.push(`<div class="thinking-block">🧠 <em>Thinking (${block.thinking ? block.thinking.length : 0} chars)</em></div>`);
       } else if (block.type === 'text') {
         parts.push(`<div class="msg-text">${escHtml(block.text)}</div>`);
       } else if (block.type === 'tool_use') {
@@ -996,7 +996,7 @@ function renderMessage(m, i, ctx, activeAgent) {
         </div>`);
       }
     }
-    bodyHtml = parts.join('') || '<div class="msg-text" style="color:var(--text3)">(contenu vide)</div>';
+    bodyHtml = parts.join('') || '<div class="msg-text" style="color:var(--text3)">(empty content)</div>';
   }
 
   let usageHtml = '';
