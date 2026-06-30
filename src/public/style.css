@@ -241,7 +241,7 @@ tr:hover td { background: var(--bg3); cursor: pointer; }
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  margin-bottom: 24px;
+  margin-bottom: 14px;
   padding: 16px 20px;
   background: var(--bg2);
   border: 1px solid var(--border);
@@ -262,7 +262,7 @@ tr:hover td { background: var(--bg3); cursor: pointer; }
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--radius2);
-  margin-bottom: 24px;
+  margin-bottom: 14px;
   flex-wrap: wrap;
 }
 .token-item { display: flex; flex-direction: column; gap: 3px; }
@@ -335,6 +335,31 @@ tr:hover td { background: var(--bg3); cursor: pointer; }
 }
 .message.collapsed .message-body { display: none; }
 
+.message-stats {
+  padding: 8px 16px 10px;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+}
+.message-stats .usage-inline {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.msg-agent-badge {
+  font-family: var(--font);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #1a1e28;
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
 .msg-text {
   color: var(--text);
   line-height: 1.65;
@@ -404,6 +429,41 @@ tr:hover td { background: var(--bg3); cursor: pointer; }
 .usage-chip .out { color: var(--green); }
 .usage-chip .cw { color: var(--yellow); }
 .usage-chip .cr { color: var(--teal); }
+
+.tag-mcp, .tag-skill {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-right: 4px;
+}
+.tag-mcp { background: #1a2e2a; color: var(--teal); }
+.tag-skill { background: #221a30; color: var(--purple); }
+
+.msg-tool-hint {
+  font-family: var(--font);
+  font-size: 11px;
+  color: var(--text3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+  flex-shrink: 1;
+}
+
+.session-tools-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 14px;
+}
 
 /* ── Back button ── */
 .back-btn {

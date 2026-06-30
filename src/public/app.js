@@ -62,6 +62,27 @@ function showView(name) {
   });
 }
 
+function pushUrl(params) {
+  const qs = new URLSearchParams(params).toString();
+  history.pushState(params, '', qs ? '?' + qs : location.pathname);
+}
+
+function restoreFromUrl() {
+  const p = new URLSearchParams(location.search);
+  const project = p.get('project');
+  const session = p.get('session');
+  if (project && session) return loadSessionDetail(encodeURIComponent(project), encodeURIComponent(session));
+  if (project) return loadSessions(encodeURIComponent(project));
+  loadDashboard();
+}
+
+window.addEventListener('popstate', e => {
+  const d = e.state || {};
+  if (d.session && d.project) loadSessionDetail(encodeURIComponent(d.project), encodeURIComponent(d.session));
+  else if (d.project) loadSessions(encodeURIComponent(d.project));
+  else loadDashboard();
+});
+
 function setBreadcrumb(parts) {
   $('breadcrumb').innerHTML = parts.map(p => `<div style="color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(p)}</div>`).join('');
 }
@@ -75,6 +96,7 @@ async function api(path) {
 
 /* ── Dashboard ── */
 async function loadDashboard() {
+  pushUrl({});
   showView('dashboard');
   setBreadcrumb(['Dashboard']);
   const container = $('view-dashboard');
@@ -178,6 +200,7 @@ function initActivityChart() {
 /* ── Sessions list ── */
 async function loadSessions(dirNameEncoded) {
   const dirName = decodeURIComponent(dirNameEncoded);
+  pushUrl({ project: dirName });
   showView('sessions');
 
   if (!state.projects) {
@@ -230,6 +253,7 @@ async function loadSessions(dirNameEncoded) {
 async function loadSessionDetail(dirNameEncoded, fileEncoded) {
   const dirName = decodeURIComponent(dirNameEncoded);
   const file = decodeURIComponent(fileEncoded);
+  pushUrl({ project: dirName, session: file });
   showView('session-detail');
   const container = $('view-session-detail');
   container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">Chargement...</div>';
@@ -264,6 +288,30 @@ function renderSessionDetail(session, dirName, file) {
     ? new Date(lastTimestamp) - new Date(firstTimestamp) : null;
   const hasAgents = agents && agents.length > 0;
 
+  // Aggregate MCPs and skills across all messages
+  const sessionMcps = new Set();
+  const sessionSkills = new Set();
+  for (const msg of session.messages) {
+    if (msg.type !== 'assistant') continue;
+    const content = Array.isArray(msg.content) ? msg.content : [];
+    for (const block of content) {
+      if (!block || block.type !== 'tool_use') continue;
+      if (block.name.startsWith('mcp__')) {
+        const parts = block.name.split('__');
+        const server = (parts[1] || '').replace(/^claude_ai_/, '').replace(/_/g, ' ');
+        if (server) sessionMcps.add(server);
+      } else if (block.name === 'Skill' && block.input?.skill) {
+        sessionSkills.add(block.input.skill);
+      }
+    }
+  }
+  const mcpBar = sessionMcps.size > 0
+    ? `<div class="session-tools-bar">${[...sessionMcps].map(s => `<span class="usage-chip"><span class="tag-mcp">mcp</span>${escHtml(s)}</span>`).join('')}</div>`
+    : '';
+  const skillBar = sessionSkills.size > 0
+    ? `<div class="session-tools-bar">${[...sessionSkills].map(s => `<span class="usage-chip"><span class="tag-skill">skill</span>${escHtml(s)}</span>`).join('')}</div>`
+    : '';
+
   container.innerHTML = `
     <button class="back-btn" onclick="loadSessions('${encodeURIComponent(dirName)}')">← Sessions</button>
     <div class="page-header">
@@ -278,6 +326,7 @@ function renderSessionDetail(session, dirName, file) {
       ${cwd ? `<div class="meta-item"><div class="meta-label">Répertoire</div><div class="meta-value mono">${escHtml(cwd.replace('/home/olivier-j/', '~/'))}</div></div>` : ''}
       ${gitBranch && gitBranch !== 'HEAD' ? `<div class="meta-item"><div class="meta-label">Branche</div><div class="meta-value mono" style="color:var(--green)">${escHtml(gitBranch)}</div></div>` : ''}
     </div>
+    ${mcpBar}${skillBar}
 
     <div class="token-bar">
       <div class="token-item"><div class="token-label">Input</div><div class="token-value input">${fmt(totalUsage.input)}</div></div>
@@ -821,14 +870,83 @@ function renderMessages(messages, ctx) {
     return true;
   });
   if (!filtered.length) return '<div class="empty"><p>Aucun message</p></div>';
-  return filtered.map((m, i) => renderMessage(m, i, ctx)).join('');
+
+  // Track active skill/agent context across messages
+  let activeAgent = null;
+  return filtered.map((m, i) => {
+    if (m.type === 'assistant') {
+      const content = Array.isArray(m.content) ? m.content : [];
+      for (const block of content) {
+        if (!block || block.type !== 'tool_use') continue;
+        if (block.name === 'Skill') {
+          activeAgent = { kind: 'skill', name: block.input?.skill || '?' };
+        } else if (block.name === 'Agent') {
+          const name = block.input?.description || block.input?.subagent_type || 'agent';
+          activeAgent = { kind: 'agent', name: name.slice(0, 40) };
+        }
+      }
+    }
+    return renderMessage(m, i, ctx, activeAgent);
+  }).join('');
 }
 
-function renderMessage(m, i, ctx) {
+function renderMessage(m, i, ctx, activeAgent) {
   const isUser = m.type === 'user';
   const isAgent = m.isSidechain;
   const collapseByDefault = !isUser && i > 0;
   const pfx = ctx === 'modal' ? 'modal-' : '';
+
+  // Extract tool info for assistant messages (used in header hint + usage chips)
+  const msgToolNames = [];
+  const mcpServers = [];
+  const skillsUsed = [];
+  if (!isUser) {
+    const contentArr = Array.isArray(m.content) ? m.content : [];
+    for (const block of contentArr) {
+      if (!block || block.type !== 'tool_use') continue;
+      msgToolNames.push(block.name);
+      if (block.name.startsWith('mcp__')) {
+        const parts = block.name.split('__');
+        const server = (parts[1] || '').replace(/^claude_ai_/, '').replace(/_/g, ' ');
+        if (server && !mcpServers.includes(server)) mcpServers.push(server);
+      } else if (block.name === 'Skill' && block.input?.skill) {
+        const sn = block.input.skill;
+        if (!skillsUsed.includes(sn)) skillsUsed.push(sn);
+      }
+    }
+  }
+  // Build a human-readable hint for the collapsed header
+  let toolHint = '';
+  if (!isUser && msgToolNames.length > 0) {
+    const hintParts = [];
+    // Agent spawns: show description
+    const contentArr2 = Array.isArray(m.content) ? m.content : [];
+    for (const block of contentArr2) {
+      if (!block || block.type !== 'tool_use') continue;
+      if (block.name === 'Agent') {
+        const desc = block.input?.description || block.input?.subagent_type || 'agent';
+        hintParts.push(`⬡ ${desc.slice(0, 40)}`);
+      } else if (block.name === 'Skill') {
+        hintParts.push(`skill:${block.input?.skill || '?'}`);
+      } else if (block.name.startsWith('mcp__')) {
+        const parts = block.name.split('__');
+        const server = (parts[1] || '').replace(/^claude_ai_/, '');
+        const tool = (parts[2] || '').replace(/^[a-z]+-/, '');
+        if (!hintParts.some(p => p.startsWith(`mcp:${server}`)))
+          hintParts.push(`mcp:${server}/${tool}`);
+      } else if (!['Read','Write','Edit','Bash','WebSearch','WebFetch','ToolSearch'].includes(block.name)) {
+        hintParts.push(block.name);
+      }
+    }
+    // Fallback to common tools if nothing notable
+    if (!hintParts.length) {
+      const common = msgToolNames.slice(0, 3);
+      hintParts.push(...common);
+      if (msgToolNames.length > 3) hintParts.push(`+${msgToolNames.length - 3}`);
+    }
+    toolHint = hintParts.slice(0, 3).join('  ');
+    if (hintParts.length > 3) toolHint += `  +${hintParts.length - 3}`;
+  }
 
   let bodyHtml = '';
   if (isUser) {
@@ -880,24 +998,36 @@ function renderMessage(m, i, ctx) {
       ${u.cache_creation_input_tokens ? `<span class="usage-chip">cache↑: <span class="cw">${fmt(u.cache_creation_input_tokens)}</span></span>` : ''}
       ${u.cache_read_input_tokens ? `<span class="usage-chip">cache↓: <span class="cr">${fmt(u.cache_read_input_tokens)}</span></span>` : ''}
       ${m.model ? `<span class="usage-chip" style="color:var(--accent)">${escHtml(modelShort(m.model))}</span>` : ''}
+      ${mcpServers.map(s => `<span class="usage-chip"><span class="tag-mcp">mcp</span>${escHtml(s)}</span>`).join('')}
+      ${skillsUsed.map(s => `<span class="usage-chip"><span class="tag-skill">skill</span>${escHtml(s)}</span>`).join('')}
     </div>`;
   }
 
   const ts = m.timestamp ? fmtTime(m.timestamp) : '';
   const msgId = `${pfx}msg-${i}`;
 
+  let agentBadge = '';
+  if (!isUser && activeAgent) {
+    const icon = activeAgent.kind === 'skill' ? '⚡' : '⬡';
+    const col = activeAgent.kind === 'skill' ? 'var(--purple)' : 'var(--teal)';
+    agentBadge = `<span class="msg-agent-badge" style="color:${col}">${icon} ${escHtml(activeAgent.name)}</span>`;
+  }
+
   return `
     <div class="message ${isAgent ? 'sidechain' : ''} ${collapseByDefault ? 'collapsed' : ''}" id="${msgId}" data-uuid="${escHtml(m.uuid || '')}">
       <div class="message-header" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="msg-role ${isUser ? 'user' : 'assistant'}">${isUser ? '👤 User' : '🤖 AI'}</span>
+        ${agentBadge}
         ${isAgent ? '<span class="badge badge-sidechain">agent</span>' : ''}
+        ${toolHint ? `<span class="msg-tool-hint">${escHtml(toolHint)}</span>` : ''}
         <div class="msg-meta">
           ${ts ? `<span>${ts}</span>` : ''}
           ${m.stopReason ? `<span style="color:var(--text3)">${escHtml(m.stopReason)}</span>` : ''}
         </div>
         <span class="msg-chevron">▼</span>
       </div>
-      <div class="message-body">${bodyHtml}${usageHtml}</div>
+      <div class="message-body">${bodyHtml}</div>
+      ${usageHtml ? `<div class="message-stats">${usageHtml}</div>` : ''}
     </div>`;
 }
 
@@ -920,4 +1050,4 @@ window.setMsgFilter = setMsgFilter;
 window.toggleTimeline = toggleTimeline;
 window.closeAgentModal = closeAgentModal;
 
-loadDashboard();
+restoreFromUrl();
