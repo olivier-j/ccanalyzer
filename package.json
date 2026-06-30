@@ -1,6 +1,6 @@
 {
   "name": "ccanalyzer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Web-based analyzer for Claude Code sessions",
   "bin": {
     "ccanalyzer": "./bin/index.js"
@@ -20,7 +20,13 @@
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["claude", "claude-code", "analytics", "sessions", "ccanalyzer"],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "analytics",
+    "sessions",
+    "ccanalyzer"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
