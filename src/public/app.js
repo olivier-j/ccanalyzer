@@ -5,6 +5,8 @@ const state = {
   currentProject: null,
   currentSession: null,
   activityChart: null,
+  ganttChart: null,
+  ganttData: null,
   msgFilter: 'all',
   timelineOpen: false,
 };
@@ -140,7 +142,7 @@ async function loadDashboard() {
     </div>
     <div class="chart-section" style="margin-bottom:28px">
       <h2>Daily activity</h2>
-      <div class="chart-container"><canvas id="activity-chart"></canvas></div>
+      <div class="chart-container" id="activity-chart"></div>
     </div>
     <div class="section-title" style="margin-bottom:12px">Projects <span style="font-weight:400;color:var(--text3)">(${projects.length})</span></div>
     <div class="table-wrap">
@@ -166,35 +168,47 @@ async function loadDashboard() {
 }
 
 function initActivityChart() {
-  const canvas = document.getElementById('activity-chart');
-  if (!canvas) return;
-  if (state.activityChart) { state.activityChart.destroy(); state.activityChart = null; }
+  const el = document.getElementById('activity-chart');
+  if (!el) return;
+  if (state.activityChart) { state.activityChart.dispose(); state.activityChart = null; }
 
   const daily = state.stats?.dailyActivity || [];
   if (!daily.length) return;
 
   const sorted = [...daily].sort((a, b) => a.date.localeCompare(b.date));
-  state.activityChart = new Chart(canvas, {
-    type: 'bar',
-    data: {
-      labels: sorted.map(d => d.date.slice(5)),
-      datasets: [
-        { label: 'Messages', data: sorted.map(d => d.messageCount), backgroundColor: 'rgba(79,142,247,0.7)', borderRadius: 3 },
-        { label: 'Tool calls', data: sorted.map(d => d.toolCallCount || 0), backgroundColor: 'rgba(167,139,250,0.6)', borderRadius: 3 },
-      ],
+  const chart = echarts.init(el);
+  state.activityChart = chart;
+  chart.setOption({
+    color: ['rgba(79,142,247,0.7)', 'rgba(167,139,250,0.6)'],
+    grid: { left: 36, right: 12, top: 28, bottom: 24 },
+    legend: { top: 0, textStyle: { color: '#8892a4', fontSize: 11 } },
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'shadow' },
+      backgroundColor: '#1a1e28', borderColor: '#1f2433',
+      textStyle: { color: '#e2e8f0' },
+      extraCssText: 'box-shadow:none',
     },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { labels: { color: '#8892a4', font: { size: 11 } } },
-        tooltip: { backgroundColor: '#1a1e28', titleColor: '#e2e8f0', bodyColor: '#8892a4' },
-      },
-      scales: {
-        x: { ticks: { color: '#5a6478', font: { size: 10 } }, grid: { color: '#1f2433' } },
-        y: { ticks: { color: '#5a6478', font: { size: 10 } }, grid: { color: '#1f2433' } },
-      },
+    xAxis: {
+      type: 'category', data: sorted.map(d => d.date.slice(5)),
+      axisLabel: { color: '#5a6478', fontSize: 10 },
+      axisLine: { lineStyle: { color: '#1f2433' } },
+      axisTick: { show: false },
     },
+    yAxis: {
+      type: 'value',
+      axisLabel: { color: '#5a6478', fontSize: 10 },
+      splitLine: { lineStyle: { color: '#1f2433' } },
+    },
+    series: [
+      { name: 'Messages', type: 'bar', data: sorted.map(d => d.messageCount), itemStyle: { borderRadius: [3, 3, 0, 0] } },
+      { name: 'Tool calls', type: 'bar', data: sorted.map(d => d.toolCallCount || 0), itemStyle: { borderRadius: [3, 3, 0, 0] } },
+    ],
   });
+
+  if (!state.activityChartResizeBound) {
+    window.addEventListener('resize', () => state.activityChart?.resize());
+    state.activityChartResizeBound = true;
+  }
 }
 
 /* ── Sessions list ── */
@@ -353,7 +367,7 @@ function renderSessionDetail(session, dirName, file) {
     </div>
     <div id="timeline-section" style="display:${state.timelineOpen ? 'block' : 'none'}">
       <div id="timeline-content" class="timeline-wrap">
-        ${buildGanttSVG(session)}
+        ${buildGanttContainer(session)}
       </div>
       <div id="timeline-detail" class="tl-detail hidden"></div>
     </div>
@@ -369,7 +383,8 @@ function renderSessionDetail(session, dirName, file) {
       ${renderMessages(session.messages)}
     </div>`;
 
-  initGanttEvents(session, dirName, file);
+  state.ganttChart = null;
+  if (state.timelineOpen) renderGanttChart(session, dirName, file);
 }
 
 /* ── Timeline / Gantt ── */
@@ -381,18 +396,30 @@ function toggleTimeline(dirName, file) {
   if (section) section.style.display = state.timelineOpen ? 'block' : 'none';
   if (chevron) chevron.textContent = state.timelineOpen ? '▲' : '▼';
   if (toggle) toggle.classList.toggle('open', state.timelineOpen);
+
+  if (state.timelineOpen) {
+    if (!state.ganttChart) {
+      renderGanttChart(state.currentSession.session, dirName, file);
+    } else {
+      state.ganttChart.resize();
+    }
+  }
 }
 
 const AGENT_COLORS = ['#a78bfa', '#2dd4bf', '#34d399', '#f97316', '#60a5fa', '#f87171', '#fbbf24', '#c084fc', '#38bdf8', '#4ade80'];
 
-function buildGanttSVG(session) {
+const GANTT_LABEL_W = 120;
+const GANTT_ROW_H = 32;
+const GANTT_TOP = 14;
+const GANTT_BOTTOM = 34;
+
+function computeGanttData(session) {
   const { messages, agents } = session;
   const timeMsgs = messages.filter(m => m.timestamp && (m.type === 'user' || m.type === 'assistant'));
-  if (timeMsgs.length === 0) return '<div style="padding:20px;color:var(--text3);text-align:center">No time data</div>';
+  if (timeMsgs.length === 0) return { empty: 'No time data' };
 
   const hasAgents = agents && agents.length > 0;
 
-  // Time bounds
   let tMin = Math.min(...timeMsgs.map(m => new Date(m.timestamp).getTime()));
   let tMax = Math.max(...timeMsgs.map(m => new Date(m.timestamp).getTime()));
   if (hasAgents) {
@@ -402,190 +429,193 @@ function buildGanttSVG(session) {
     }
   }
   tMax += Math.max(5000, (tMax - tMin) * 0.02);
-  const totalMs = tMax - tMin;
-  if (totalMs <= 0) return '<div style="padding:20px;color:var(--text3);text-align:center">Instant session</div>';
+  if (tMax - tMin <= 0) return { empty: 'Instant session' };
 
-  // SVG layout
-  const SVG_W = 1000;
-  const LABEL_W = 120;
-  const PAD_R = 16;
-  const CHART_W = SVG_W - LABEL_W - PAD_R;
-  const USER_H = 24;
-  const MAIN_H = 48;
-  const AGENT_H = 30;
-  const AXIS_H = 26;
-  const GAP = 6;
-
-  const numAgents = hasAgents ? agents.length : 0;
-  const SVG_H = 10 + USER_H + GAP + MAIN_H + (numAgents > 0 ? GAP + numAgents * (AGENT_H + 3) : 0) + AXIS_H;
-
-  const toX = ms => LABEL_W + ((ms - tMin) / totalMs) * CHART_W;
-
-  let parts = [];
-  let currentY = 10;
-
-  // ── Grid lines ──
-  const numTicks = 8;
-  for (let i = 0; i <= numTicks; i++) {
-    const x = LABEL_W + (i / numTicks) * CHART_W;
-    parts.push(`<line x1="${x.toFixed(1)}" y1="0" x2="${x.toFixed(1)}" y2="${SVG_H - AXIS_H}" stroke="#1a1e28" stroke-width="1"/>`);
+  const categories = ['👤 User', '🤖 Main AI'];
+  if (hasAgents) {
+    for (const agent of agents) categories.push(agent.meta?.description || agent.agentId || '');
   }
 
-  // ── User track ──
+  const shapes = [];
+
+  // ── User ticks ──
   const userMsgs = timeMsgs.filter(m => m.type === 'user');
-  parts.push(`<text x="${LABEL_W - 8}" y="${currentY + USER_H / 2 + 4}" text-anchor="end" fill="#5a6478" font-size="10" font-family="system-ui">👤 User</text>`);
   for (const m of userMsgs) {
-    const x = toX(new Date(m.timestamp).getTime());
-    parts.push(`<rect x="${x - 1.5}" y="${currentY + 2}" width="3" height="${USER_H - 4}" fill="#fbbf24" rx="1" opacity="0.9" class="gantt-msg" data-uuid="${escHtml(m.uuid || '')}"/>`);
+    const t = new Date(m.timestamp).getTime();
+    shapes.push({
+      kind: 'tick', catIndex: 0, x0: t, x1: t,
+      color: '#fbbf24',
+      uuid: m.uuid || null,
+      tooltip: `<strong>User</strong> ${fmtTime(m.timestamp)}`,
+    });
   }
-  currentY += USER_H + GAP;
 
-  // ── Main AI track ──
+  // ── Main AI row background + bars ──
+  shapes.push({ kind: 'rowBg', catIndex: 1, x0: tMin, x1: tMax, color: '#4f8ef7', opacity: 0.06 });
+
   const assistMsgs = timeMsgs.filter(m => m.type === 'assistant');
-  parts.push(`<text x="${LABEL_W - 8}" y="${currentY + MAIN_H / 2 + 4}" text-anchor="end" fill="#8892a4" font-size="11" font-family="system-ui">🤖 Main AI</text>`);
-  parts.push(`<rect x="${LABEL_W}" y="${currentY}" width="${CHART_W}" height="${MAIN_H}" fill="#4f8ef710" rx="3"/>`);
-
   for (let i = 0; i < assistMsgs.length; i++) {
     const m = assistMsgs[i];
     const nextM = assistMsgs[i + 1];
     const startMs = new Date(m.timestamp).getTime();
-    const endMs = nextM
-      ? new Date(nextM.timestamp).getTime()
-      : Math.min(startMs + 30000, tMin + totalMs);
-    const x = toX(startMs);
-    const w = Math.max(4, toX(endMs) - x - 1);
-    const barY = currentY + 8;
-    const barH = MAIN_H - 16;
+    const endMs = nextM ? new Date(nextM.timestamp).getTime() : Math.min(startMs + 30000, tMax);
 
     const content = Array.isArray(m.content) ? m.content : [];
     const tools = content.filter(c => c && c.type === 'tool_use');
     const hasAgentTool = tools.some(t => t.name === 'Agent');
     const color = hasAgentTool ? '#a78bfa' : '#4f8ef7';
+    const label = tools.slice(0, 2).map(t => t.name.replace(/([A-Z])/g, ' $1').trim()).join(', ');
 
-    parts.push(`<rect x="${x.toFixed(1)}" y="${barY}" width="${w.toFixed(1)}" height="${barH}" fill="${color}" rx="2" opacity="0.85" class="gantt-msg" data-uuid="${escHtml(m.uuid || '')}">
-      <title>${escHtml(tools.map(t => t.name).join(', ') || 'Response')}</title>
-    </rect>`);
-
-    if (w > 50 && tools.length > 0) {
-      const label = tools.slice(0, 2).map(t => t.name.replace(/([A-Z])/g, ' $1').trim()).join(', ');
-      parts.push(`<text x="${(x + 4).toFixed(1)}" y="${barY + barH - 4}" fill="white" font-size="8" opacity="0.85" pointer-events="none">${escHtml(label.slice(0, Math.floor(w / 6)))}</text>`);
-    }
+    shapes.push({
+      kind: 'bar', catIndex: 1, x0: startMs, x1: endMs,
+      color, opacity: 0.85, minWidth: 4,
+      uuid: m.uuid || null,
+      label, labelMinWidth: 50,
+      tooltip: `<strong>Assistant</strong> ${fmtTime(m.timestamp)}${tools.length ? `<br><span style="color:#a78bfa">${escHtml(tools.map(t => t.name).join(', '))}</span>` : ''}${m.usage ? `<br>in:${fmt(m.usage.input_tokens)} out:${fmt(m.usage.output_tokens)}` : ''}`,
+    });
   }
-  currentY += MAIN_H + GAP;
 
-  // ── Agent tracks ──
-  for (let i = 0; i < agents.length; i++) {
-    const agent = agents[i];
-    const color = AGENT_COLORS[i % AGENT_COLORS.length];
-    const y = currentY + i * (AGENT_H + 3);
-    const cy = y + AGENT_H / 2;
+  // ── Agent rows ──
+  if (hasAgents) {
+    for (let i = 0; i < agents.length; i++) {
+      const agent = agents[i];
+      const catIndex = 2 + i;
+      const color = AGENT_COLORS[i % AGENT_COLORS.length];
 
-    const label = agent.meta?.description || agent.agentId || '';
-    const maxLabelW = LABEL_W - 10;
-    const approxW = label.length * 5.5;
-    const textLengthAttr = approxW > maxLabelW ? ` textLength="${maxLabelW}" lengthAdjust="spacingAndGlyphs"` : '';
-    parts.push(`<text x="${LABEL_W - 8}" y="${cy + 4}" text-anchor="end" fill="#5a6478" font-size="9.5" font-family="system-ui"${textLengthAttr}>${escHtml(label)}</text>`);
+      shapes.push({ kind: 'rowBg', catIndex, x0: tMin, x1: tMax, color, opacity: 0.05 });
 
-    // Track bg
-    parts.push(`<rect x="${LABEL_W}" y="${y}" width="${CHART_W}" height="${AGENT_H}" fill="${color}08" rx="2"/>`);
+      if (agent.firstTimestamp && agent.lastTimestamp) {
+        const startMs = new Date(agent.firstTimestamp).getTime();
+        const endMs = new Date(agent.lastTimestamp).getTime();
 
-    if (agent.firstTimestamp && agent.lastTimestamp) {
-      const startMs = new Date(agent.firstTimestamp).getTime();
-      const endMs = new Date(agent.lastTimestamp).getTime();
-      const x = toX(startMs);
-      const w = Math.max(6, toX(endMs) - x);
-      const barY = y + 5;
-      const barH = AGENT_H - 10;
+        if (agent.spawnedAt) {
+          shapes.push({
+            kind: 'connector',
+            x0: new Date(agent.spawnedAt).getTime(), catIndexFrom: 1,
+            x1: startMs, catIndexTo: catIndex,
+            color,
+          });
+        }
 
-      // Spawn connector
-      if (agent.spawnedAt) {
-        const spawnX = toX(new Date(agent.spawnedAt).getTime());
-        const mainBottomY = 10 + USER_H + GAP + MAIN_H;
-        parts.push(`<line x1="${spawnX.toFixed(1)}" y1="${mainBottomY}" x2="${x.toFixed(1)}" y2="${cy.toFixed(1)}" stroke="${color}" stroke-width="1" stroke-dasharray="4,3" opacity="0.35"/>`);
-      }
-
-      const depth = agent.meta?.spawnDepth || 1;
-      const depthBorder = depth > 1 ? ` stroke="${color}" stroke-width="1.5"` : '';
-
-      parts.push(`<rect x="${x.toFixed(1)}" y="${barY}" width="${w.toFixed(1)}" height="${barH}" fill="${color}" rx="2" opacity="0.8" class="gantt-agent" data-agent-id="${escHtml(agent.agentId)}"${depthBorder} style="cursor:pointer">
-        <title>${escHtml(agent.meta?.description || agent.agentId)} | ${agent.messageCount} msgs | ${fmtCost(agent.totalCost)} | ${fmtDuration(endMs - startMs)}</title>
-      </rect>`);
-
-      if (w > 40) {
+        const depth = agent.meta?.spawnDepth || 1;
         const info = `${fmtCost(agent.totalCost)} · ${agent.messageCount}msg`;
-        parts.push(`<text x="${(x + 4).toFixed(1)}" y="${barY + barH - 4}" fill="white" font-size="8" opacity="0.9" pointer-events="none">${escHtml(info.slice(0, Math.floor(w / 5)))}</text>`);
+        shapes.push({
+          kind: 'bar', catIndex, x0: startMs, x1: endMs,
+          color, opacity: 0.8, minWidth: 6,
+          borderColor: depth > 1 ? color : null, borderWidth: depth > 1 ? 1.5 : 0,
+          agentId: agent.agentId,
+          label: info, labelMinWidth: 40,
+          tooltip: `<strong>${escHtml(agent.meta?.description || agent.agentId)}</strong><br>${agent.messageCount} msgs · ${fmtCost(agent.totalCost)} · ${fmtDuration(endMs - startMs)}`,
+        });
       }
     }
   }
 
-  if (numAgents > 0) currentY += numAgents * (AGENT_H + 3) + GAP;
-
-  // ── Time axis ──
-  const axisY = SVG_H - AXIS_H + 2;
-  parts.push(`<line x1="${LABEL_W}" y1="${axisY}" x2="${SVG_W - PAD_R}" y2="${axisY}" stroke="#252b3a" stroke-width="1"/>`);
-  for (let i = 0; i <= numTicks; i++) {
-    const frac = i / numTicks;
-    const x = LABEL_W + frac * CHART_W;
-    const label = fmtDuration(frac * totalMs);
-    parts.push(`<line x1="${x.toFixed(1)}" y1="${axisY}" x2="${x.toFixed(1)}" y2="${axisY + 4}" stroke="#2e3650"/>`);
-    parts.push(`<text x="${x.toFixed(1)}" y="${axisY + 15}" text-anchor="middle" fill="#5a6478" font-size="9" font-family="system-ui">${label}</text>`);
-  }
-
-  return `
-    <div class="gantt-svg-wrap">
-      <svg id="gantt-svg" viewBox="0 0 ${SVG_W} ${SVG_H}" preserveAspectRatio="none" style="width:100%;height:${SVG_H}px;display:block" xmlns="http://www.w3.org/2000/svg">
-        ${parts.join('\n')}
-      </svg>
-    </div>
-    <div id="gantt-tip" class="gantt-tooltip hidden"></div>`;
+  const height = GANTT_TOP + categories.length * GANTT_ROW_H + GANTT_BOTTOM;
+  return { categories, shapes, tMin, tMax, height };
 }
 
-function initGanttEvents(session, dirName, file) {
-  const svg = $('gantt-svg');
-  const tip = $('gantt-tip');
-  if (!svg || !tip) return;
+function buildGanttContainer(session) {
+  const data = computeGanttData(session);
+  state.ganttData = data;
+  if (data.empty) return `<div style="padding:20px;color:var(--text3);text-align:center">${data.empty}</div>`;
+  return `<div id="gantt-chart" style="width:100%;height:${data.height}px"></div>`;
+}
 
-  svg.addEventListener('mousemove', e => {
-    const target = e.target.closest('[data-uuid],[data-agent-id]');
-    if (!target) { tip.classList.add('hidden'); return; }
+function renderGanttChart(session, dirName, file) {
+  const el = document.getElementById('gantt-chart');
+  if (!el) return;
+  const data = state.ganttData || computeGanttData(session);
+  if (data.empty) return;
 
-    if (target.dataset.uuid) {
-      const msg = session.messages.find(m => m.uuid === target.dataset.uuid);
-      if (msg) {
-        const ts = msg.timestamp ? fmtTime(msg.timestamp) : '';
-        const tools = Array.isArray(msg.content) ? msg.content.filter(c => c && c.type === 'tool_use') : [];
-        const toolStr = tools.map(t => t.name).join(', ');
-        tip.innerHTML = `<strong>${msg.type === 'user' ? 'User' : 'Assistant'}</strong> ${ts}${toolStr ? `<br><span style="color:var(--purple)">${escHtml(toolStr)}</span>` : ''}${msg.usage ? `<br>in:${fmt(msg.usage.input_tokens)} out:${fmt(msg.usage.output_tokens)}` : ''}`;
-      }
-    } else if (target.dataset.agentId) {
-      const agent = session.agents.find(a => a.agentId === target.dataset.agentId);
-      if (agent) {
-        const dur = agent.firstTimestamp && agent.lastTimestamp
-          ? fmtDuration(new Date(agent.lastTimestamp) - new Date(agent.firstTimestamp)) : '?';
-        tip.innerHTML = `<strong>${escHtml(agent.meta?.description || agent.agentId)}</strong><br>${agent.messageCount} msgs · ${fmtCost(agent.totalCost)} · ${dur}`;
-      }
+  if (state.ganttChart) { state.ganttChart.dispose(); state.ganttChart = null; }
+  const chart = echarts.init(el);
+  state.ganttChart = chart;
+
+  const { categories, shapes, tMin, tMax } = data;
+
+  function renderItem(params, api) {
+    const s = shapes[params.dataIndex];
+    const rowH = api.size([0, 1])[1];
+
+    if (s.kind === 'tick') {
+      const p = api.coord([s.x0, s.catIndex]);
+      const w = 3, h = rowH * 0.7;
+      return { type: 'rect', shape: { x: p[0] - w / 2, y: p[1] - h / 2, width: w, height: h }, style: { fill: s.color, opacity: 0.9 }, cursor: s.uuid ? 'pointer' : 'default' };
     }
 
-    // Tooltip fixed to viewport — avoids any container clip issues
-    tip.classList.remove('hidden');
-    tip.style.left = (e.clientX + 14) + 'px';
-    tip.style.top = (e.clientY - 10) + 'px';
-  });
-
-  svg.addEventListener('mouseleave', () => tip.classList.add('hidden'));
-
-  // Click → show inline detail panel below the timeline
-  svg.addEventListener('click', async e => {
-    const bar = e.target.closest('[data-agent-id],[data-uuid]');
-    if (!bar) return;
-    tip.classList.add('hidden');
-
-    if (bar.dataset.agentId) {
-      showTimelineAgentDetail(session, dirName, file, bar.dataset.agentId);
-    } else if (bar.dataset.uuid) {
-      showTimelineMessageDetail(session, bar.dataset.uuid);
+    if (s.kind === 'rowBg') {
+      const p0 = api.coord([s.x0, s.catIndex]);
+      const p1 = api.coord([s.x1, s.catIndex]);
+      const h = rowH * 0.92;
+      return { type: 'rect', shape: { x: p0[0], y: p0[1] - h / 2, width: p1[0] - p0[0], height: h }, style: { fill: s.color, opacity: s.opacity }, silent: true };
     }
+
+    if (s.kind === 'connector') {
+      const p0 = api.coord([s.x0, s.catIndexFrom]);
+      const p1 = api.coord([s.x1, s.catIndexTo]);
+      return { type: 'line', shape: { x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] }, style: { stroke: s.color, lineWidth: 1, lineDash: [4, 3], opacity: 0.35 }, silent: true };
+    }
+
+    // 'bar' — Main AI segment or agent span
+    const start = api.coord([s.x0, s.catIndex]);
+    const end = api.coord([s.x1, s.catIndex]);
+    const h = rowH * 0.65;
+    const w = Math.max(s.minWidth, end[0] - start[0]);
+    const children = [{
+      type: 'rect',
+      shape: { x: start[0], y: start[1] - h / 2, width: w, height: h, r: 2 },
+      style: { fill: s.color, opacity: s.opacity, stroke: s.borderColor || undefined, lineWidth: s.borderWidth || 0 },
+    }];
+    if (s.label && w > s.labelMinWidth) {
+      children.push({
+        type: 'text',
+        style: { text: s.label.slice(0, Math.floor(w / 6)), x: start[0] + 4, y: start[1] + h / 2 - 4, fill: '#fff', fontSize: 8, opacity: 0.85 },
+      });
+    }
+    return { type: 'group', children, cursor: (s.uuid || s.agentId) ? 'pointer' : 'default' };
+  }
+
+  chart.setOption({
+    grid: { left: GANTT_LABEL_W, right: 16, top: GANTT_TOP, bottom: GANTT_BOTTOM },
+    xAxis: {
+      type: 'value', min: tMin, max: tMax,
+      axisLabel: { color: '#5a6478', fontSize: 9, formatter: v => fmtDuration(v - tMin) },
+      axisLine: { lineStyle: { color: '#252b3a' } },
+      axisTick: { lineStyle: { color: '#2e3650' } },
+      splitLine: { lineStyle: { color: '#1a1e28' } },
+    },
+    yAxis: {
+      type: 'category', data: categories, inverse: true,
+      axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false },
+      axisLabel: { color: '#5a6478', fontSize: 10, width: GANTT_LABEL_W - 16, overflow: 'truncate' },
+    },
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: '#1a1e28', borderColor: '#1f2433',
+      textStyle: { color: '#e2e8f0', fontSize: 12 },
+      extraCssText: 'box-shadow:none',
+      formatter: params => shapes[params.dataIndex]?.tooltip || '',
+    },
+    series: [{
+      type: 'custom',
+      renderItem,
+      encode: { x: [1, 2], y: 0 },
+      data: shapes.map(s => [s.catIndex !== undefined ? s.catIndex : s.catIndexTo, s.x0, s.x1]),
+    }],
   });
+
+  chart.on('click', params => {
+    const s = shapes[params.dataIndex];
+    if (!s) return;
+    if (s.agentId) showTimelineAgentDetail(session, dirName, file, s.agentId);
+    else if (s.uuid) showTimelineMessageDetail(session, s.uuid);
+  });
+
+  if (!state.ganttChartResizeBound) {
+    window.addEventListener('resize', () => state.ganttChart?.resize());
+    state.ganttChartResizeBound = true;
+  }
 }
 
 /* ── Timeline detail panel ── */
