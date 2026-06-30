@@ -13,6 +13,12 @@ npx -y ccanalyzer@latest
 
 Opens a local dashboard at **http://localhost:3737** in your browser.
 
+If port 3737 is already in use, specify a different port with `-p`:
+
+```bash
+npx -y ccanalyzer@latest -p 3738
+```
+
 ## Features
 
 - **Dashboard** — all projects with token counts, costs, and last activity
