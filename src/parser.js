@@ -40,7 +40,9 @@ function decodePath(dirName) {
 }
 
 function decodeProjectName(dirName) {
-  const full = decodePath(dirName);
+  const worktreeSep = '--claude-worktrees-';
+  const base = dirName.includes(worktreeSep) ? dirName.split(worktreeSep)[0] : dirName;
+  const full = decodePath(base);
   const parts = full.split('/').filter(Boolean);
   return parts[parts.length - 1] || full;
 }
@@ -188,6 +190,15 @@ function parseSubagents(sessionDir) {
   return agents;
 }
 
+const WORKTREE_SEP = '--claude-worktrees-';
+
+function projectNameFromCwd(cwd, isWorktree) {
+  if (!cwd) return null;
+  const base = isWorktree ? cwd.replace(/\/.claude\/worktrees\/[^/]+\/?$/, '') : cwd;
+  const parts = base.split('/').filter(Boolean);
+  return parts[parts.length - 1] || null;
+}
+
 function getAllProjects() {
   if (!fs.existsSync(PROJECTS_DIR)) return [];
 
@@ -195,11 +206,15 @@ function getAllProjects() {
     return fs.statSync(path.join(PROJECTS_DIR, d)).isDirectory();
   });
 
-  const projects = [];
+  const byParent = new Map();
+
   for (const dirName of projectDirs) {
     const projectPath = path.join(PROJECTS_DIR, dirName);
     const sessionFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
     if (sessionFiles.length === 0) continue;
+
+    const isWorktree = dirName.includes(WORKTREE_SEP);
+    const parentDirName = isWorktree ? dirName.split(WORKTREE_SEP)[0] : dirName;
 
     let totalCost = 0;
     let totalMessages = 0;
@@ -207,10 +222,12 @@ function getAllProjects() {
     let firstActivity = null;
     const totalUsage = { input: 0, output: 0, cache_write: 0, cache_read: 0 };
     const sessions = [];
+    let firstCwd = null;
 
     for (const sf of sessionFiles) {
       try {
         const session = parseSessionFile(path.join(projectPath, sf), true);
+        if (!firstCwd && session.cwd) firstCwd = session.cwd;
         totalCost += session.totalCost;
         totalMessages += session.messageCount;
         totalUsage.input += session.totalUsage.input;
@@ -227,12 +244,12 @@ function getAllProjects() {
           if (!firstActivity || d < new Date(firstActivity)) firstActivity = session.firstTimestamp;
         }
 
-        // Check if this session has subagents
         const sessionId = sf.replace('.jsonl', '');
         const sessionDir = path.join(projectPath, sessionId);
         const hasSubagents = fs.existsSync(path.join(sessionDir, 'subagents'));
 
         sessions.push({
+          projectDirName: dirName,
           sessionId: session.sessionId || sessionId,
           file: sf,
           title: session.title,
@@ -251,23 +268,56 @@ function getAllProjects() {
       } catch {}
     }
 
-    sessions.sort((a, b) => {
+    const cwdName = projectNameFromCwd(firstCwd, isWorktree);
+    const displayName = cwdName || decodeProjectName(parentDirName);
+    const displayPath = firstCwd
+      ? (isWorktree ? firstCwd.replace(/\/.claude\/worktrees\/[^/]+\/?$/, '') : firstCwd)
+      : decodePath(parentDirName);
+
+    if (byParent.has(parentDirName)) {
+      const parent = byParent.get(parentDirName);
+      parent.sessions.push(...sessions);
+      parent.totalCost += totalCost;
+      parent.totalMessages += totalMessages;
+      parent.sessionCount += sessions.length;
+      parent.totalUsage.input += totalUsage.input;
+      parent.totalUsage.output += totalUsage.output;
+      parent.totalUsage.cache_write += totalUsage.cache_write;
+      parent.totalUsage.cache_read += totalUsage.cache_read;
+      if (lastActivity && (!parent.lastActivity || new Date(lastActivity) > new Date(parent.lastActivity)))
+        parent.lastActivity = lastActivity;
+      if (firstActivity && (!parent.firstActivity || new Date(firstActivity) < new Date(parent.firstActivity)))
+        parent.firstActivity = firstActivity;
+      if (!parent._hasCwdName && cwdName) {
+        parent.name = displayName;
+        parent.path = displayPath;
+        parent._hasCwdName = true;
+      }
+    } else {
+      byParent.set(parentDirName, {
+        dirName: parentDirName,
+        name: displayName,
+        path: displayPath,
+        sessionCount: sessions.length,
+        totalMessages,
+        totalCost,
+        totalUsage,
+        firstActivity,
+        lastActivity,
+        sessions,
+        _hasCwdName: !!cwdName,
+      });
+    }
+  }
+
+  const projects = Array.from(byParent.values());
+
+  for (const p of projects) {
+    delete p._hasCwdName;
+    p.sessions.sort((a, b) => {
       const da = a.lastTimestamp ? new Date(a.lastTimestamp) : new Date(0);
       const db = b.lastTimestamp ? new Date(b.lastTimestamp) : new Date(0);
       return db - da;
-    });
-
-    projects.push({
-      dirName,
-      name: decodeProjectName(dirName),
-      path: decodePath(dirName),
-      sessionCount: sessions.length,
-      totalMessages,
-      totalCost,
-      totalUsage,
-      firstActivity,
-      lastActivity,
-      sessions,
     });
   }
 

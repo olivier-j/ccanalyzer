@@ -232,7 +232,7 @@ async function loadSessions(dirNameEncoded) {
         <thead><tr><th>Titre</th><th>Modèle</th><th>Messages</th><th>Agents</th><th>Input</th><th>Output</th><th>Coût</th><th>Date</th></tr></thead>
         <tbody>
           ${project.sessions.map(s => `
-            <tr onclick="loadSessionDetail('${encodeURIComponent(dirName)}','${encodeURIComponent(s.file)}')">
+            <tr onclick="loadSessionDetail('${encodeURIComponent(dirName)}','${encodeURIComponent(s.file)}','${encodeURIComponent(s.projectDirName || dirName)}')">
               <td class="td-name" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                 ${s.hasSubagents ? '<span style="color:var(--purple);margin-right:6px">⬡</span>' : ''}${escHtml(s.title)}
               </td>
@@ -250,7 +250,7 @@ async function loadSessions(dirNameEncoded) {
 }
 
 /* ── Session detail ── */
-async function loadSessionDetail(dirNameEncoded, fileEncoded) {
+async function loadSessionDetail(dirNameEncoded, fileEncoded, apiDirNameEncoded) {
   const dirName = decodeURIComponent(dirNameEncoded);
   const file = decodeURIComponent(fileEncoded);
   pushUrl({ project: dirName, session: file });
@@ -259,16 +259,27 @@ async function loadSessionDetail(dirNameEncoded, fileEncoded) {
   container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">Chargement...</div>';
   show(true);
 
+  // Resolve the actual dir where the session file lives (may differ for merged worktrees)
+  let apiDirName = apiDirNameEncoded ? decodeURIComponent(apiDirNameEncoded) : dirName;
+  if (!apiDirNameEncoded) {
+    if (!state.projects) {
+      try { state.projects = await api('/api/projects'); } catch {}
+    }
+    const proj = state.projects?.find(p => p.dirName === dirName);
+    const sess = proj?.sessions?.find(s => s.file === file);
+    if (sess?.projectDirName) apiDirName = sess.projectDirName;
+  }
+
   let session;
   try {
-    session = await api(`/api/projects/${encodeURIComponent(dirName)}/sessions/${encodeURIComponent(file)}`);
+    session = await api(`/api/projects/${encodeURIComponent(apiDirName)}/sessions/${encodeURIComponent(file)}`);
   } catch (e) {
     container.innerHTML = `<div style="padding:40px;color:var(--red)">Erreur: ${escHtml(e.message)}</div>`;
     show(false);
     return;
   }
   show(false);
-  state.currentSession = { session, dirName, file };
+  state.currentSession = { session, dirName, apiDirName, file };
   state.msgFilter = 'all';
   state.timelineOpen = session.agents && session.agents.length > 0;
 
@@ -666,7 +677,8 @@ async function showTimelineAgentDetail(session, dirName, file, agentId) {
   modal.style.display = 'flex';
 
   try {
-    const detail = await api(`/api/projects/${encodeURIComponent(dirName)}/sessions/${encodeURIComponent(file)}/agents/${encodeURIComponent(agentId)}`);
+    const apiDirName = state.currentSession?.apiDirName || dirName;
+    const detail = await api(`/api/projects/${encodeURIComponent(apiDirName)}/sessions/${encodeURIComponent(file)}/agents/${encodeURIComponent(agentId)}`);
     $('agent-modal-body').className = 'agent-modal-body';
     $('agent-modal-body').innerHTML = `
       <div class="agent-modal-stats">
