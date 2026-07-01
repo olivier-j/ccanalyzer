@@ -409,7 +409,7 @@ function toggleTimeline(dirName, file) {
 const AGENT_COLORS = ['#a78bfa', '#2dd4bf', '#34d399', '#f97316', '#60a5fa', '#f87171', '#fbbf24', '#c084fc', '#38bdf8', '#4ade80'];
 
 const GANTT_LABEL_W = 120;
-const GANTT_ROW_H = 32;
+const GANTT_ROW_H = 36;
 const GANTT_TOP = 14;
 const GANTT_BOTTOM = 34;
 
@@ -560,7 +560,7 @@ function renderGanttChart(session, dirName, file) {
     // 'bar' — Main AI segment or agent span
     const start = api.coord([s.x0, s.catIndex]);
     const end = api.coord([s.x1, s.catIndex]);
-    const h = rowH * 0.65;
+    const h = rowH * 0.7;
     const w = Math.max(s.minWidth, end[0] - start[0]);
     const children = [{
       type: 'rect',
@@ -570,7 +570,10 @@ function renderGanttChart(session, dirName, file) {
     if (s.label && w > s.labelMinWidth) {
       children.push({
         type: 'text',
-        style: { text: s.label.slice(0, Math.floor(w / 6)), x: start[0] + 4, y: start[1] + h / 2 - 4, fill: '#fff', fontSize: 8, opacity: 0.85 },
+        style: {
+          text: s.label.slice(0, Math.floor(w / 7)), x: start[0] + 4, y: start[1],
+          verticalAlign: 'middle', fill: '#fff', fontSize: 10, fontWeight: 500, opacity: 0.95,
+        },
       });
     }
     return { type: 'group', children, cursor: (s.uuid || s.agentId) ? 'pointer' : 'default' };
