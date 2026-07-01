@@ -662,7 +662,7 @@ function showTimelineMessageDetail(session, uuid) {
       body += `<div class="usage-inline">
         <span class="usage-chip">in: <span class="in">${fmt(msg.usage.input_tokens)}</span></span>
         <span class="usage-chip">out: <span class="out">${fmt(msg.usage.output_tokens)}</span></span>
-        ${msg.usage.cache_read_input_tokens ? `<span class="usage-chip">cache↓: <span class="cr">${fmt(msg.usage.cache_read_input_tokens)}</span></span>` : ''}
+        ${msg.usage.cache_read_input_tokens ? `<span class="usage-chip">cache r: <span class="cr">${fmt(msg.usage.cache_read_input_tokens)}</span></span>` : ''}
       </div>`;
     }
   }
@@ -879,6 +879,18 @@ function renderAgentMessages(msgs) {
       }
     }
 
+    let usageHtml = '';
+    if (!isUser && m.usage) {
+      const u = m.usage;
+      usageHtml = `<div class="usage-inline">
+        <span class="usage-chip">in: <span class="in">${fmt(u.input_tokens)}</span></span>
+        <span class="usage-chip">out: <span class="out">${fmt(u.output_tokens)}</span></span>
+        ${u.cache_creation_input_tokens ? `<span class="usage-chip">cache w: <span class="cw">${fmt(u.cache_creation_input_tokens)}</span></span>` : ''}
+        ${u.cache_read_input_tokens ? `<span class="usage-chip">cache r: <span class="cr">${fmt(u.cache_read_input_tokens)}</span></span>` : ''}
+        ${m.model ? `<span class="usage-chip" style="color:var(--accent)">${escHtml(modelShort(m.model))}</span>` : ''}
+      </div>`;
+    }
+
     const ts = m.timestamp ? fmtTime(m.timestamp) : '';
     return `
       <div class="message ${collapseByDefault ? 'collapsed' : ''}" style="margin-bottom:6px">
@@ -888,6 +900,7 @@ function renderAgentMessages(msgs) {
           <span class="msg-chevron" style="margin-left:auto">▼</span>
         </div>
         <div class="message-body" style="padding:10px 12px">${bodyParts.join('') || '<div style="color:var(--text3);font-size:11px">empty</div>'}</div>
+        ${usageHtml ? `<div class="message-stats" style="padding:8px 12px">${usageHtml}</div>` : ''}
       </div>`;
   }).join('');
 }
@@ -1041,8 +1054,8 @@ function renderMessage(m, i, ctx, activeAgent) {
     usageHtml = `<div class="usage-inline">
       <span class="usage-chip">in: <span class="in">${fmt(u.input_tokens)}</span></span>
       <span class="usage-chip">out: <span class="out">${fmt(u.output_tokens)}</span></span>
-      ${u.cache_creation_input_tokens ? `<span class="usage-chip">cache↑: <span class="cw">${fmt(u.cache_creation_input_tokens)}</span></span>` : ''}
-      ${u.cache_read_input_tokens ? `<span class="usage-chip">cache↓: <span class="cr">${fmt(u.cache_read_input_tokens)}</span></span>` : ''}
+      ${u.cache_creation_input_tokens ? `<span class="usage-chip">cache w: <span class="cw">${fmt(u.cache_creation_input_tokens)}</span></span>` : ''}
+      ${u.cache_read_input_tokens ? `<span class="usage-chip">cache r: <span class="cr">${fmt(u.cache_read_input_tokens)}</span></span>` : ''}
       ${m.model ? `<span class="usage-chip" style="color:var(--accent)">${escHtml(modelShort(m.model))}</span>` : ''}
       ${mcpServers.map(s => `<span class="usage-chip"><span class="tag-mcp">mcp</span>${escHtml(s)}</span>`).join('')}
       ${skillsUsed.map(s => `<span class="usage-chip"><span class="tag-skill">skill</span>${escHtml(s)}</span>`).join('')}
@@ -1064,7 +1077,7 @@ function renderMessage(m, i, ctx, activeAgent) {
   return `
     <div class="message ${isAgent ? 'sidechain' : ''} ${collapseByDefault ? 'collapsed' : ''}" id="${msgId}" data-uuid="${escHtml(m.uuid || '')}">
       <div class="message-header" onclick="this.parentElement.classList.toggle('collapsed')">
-        <span class="msg-role ${isUser ? 'user' : 'assistant'}">${isUser ? '👤 User' : '🤖 AI'}</span>
+        <span class="msg-role ${isUser ? 'user' : 'assistant'}">${isUser ? '👤 User' : '🤖 Assistant'}</span>
         ${agentBadge}
         ${isAgent ? '<span class="badge badge-sidechain">agent</span>' : ''}
         ${toolHint ? `<span class="msg-tool-hint">${escHtml(toolHint)}</span>` : ''}

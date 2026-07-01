@@ -71,6 +71,12 @@ function parseSessionFile(filePath, lightMode = false) {
   let subAgentMessages = 0;
   // Map toolUseId → { timestamp, uuid } for agent spawn detection
   const toolUseMap = {};
+  // Claude Code writes one JSONL line per content block (thinking/text/tool_use)
+  // of a single streamed assistant turn — all sharing the same message.id and
+  // usage. Track the last assistant message.id to merge those lines back into
+  // one logical turn instead of counting/displaying them 2-3x.
+  let lastAssistantMsgId = null;
+  let lastAssistantMessageRef = null;
 
   for (const entry of entries) {
     if (!sessionId && entry.sessionId) sessionId = entry.sessionId;
@@ -86,44 +92,61 @@ function parseSessionFile(filePath, lightMode = false) {
         if (!lastTimestamp || ts > lastTimestamp) lastTimestamp = ts;
       }
 
+      let isContinuation = false;
+
       if (entry.type === 'assistant') {
         const msg = entry.message || {};
         if (msg.model && msg.model !== '<synthetic>') model = msg.model;
         const usage = msg.usage;
-        if (usage) {
+        isContinuation = !!(msg.id && msg.id === lastAssistantMsgId);
+        if (usage && !isContinuation) {
           totalUsage.input += usage.input_tokens || 0;
           totalUsage.output += usage.output_tokens || 0;
           totalUsage.cache_write += usage.cache_creation_input_tokens || 0;
           totalUsage.cache_read += usage.cache_read_input_tokens || 0;
           totalCost += calcCost(usage, msg.model || model);
         }
+        if (msg.id) lastAssistantMsgId = msg.id;
         // Index tool_use IDs → for linking to spawned agents
         if (!lightMode && Array.isArray(msg.content)) {
+          const refUuid = isContinuation && lastAssistantMessageRef ? lastAssistantMessageRef.uuid : entry.uuid;
           for (const block of msg.content) {
             if (block && block.type === 'tool_use' && block.id) {
-              toolUseMap[block.id] = { timestamp: entry.timestamp, uuid: entry.uuid };
+              toolUseMap[block.id] = { timestamp: entry.timestamp, uuid: refUuid };
             }
           }
         }
+      } else {
+        lastAssistantMsgId = null;
       }
 
-      if (entry.isSidechain) subAgentMessages++;
-      else mainAgentMessages++;
+      if (!isContinuation) {
+        if (entry.isSidechain) subAgentMessages++;
+        else mainAgentMessages++;
+      }
 
       if (!lightMode) {
-        messages.push({
-          uuid: entry.uuid,
-          parentUuid: entry.parentUuid,
-          type: entry.type,
-          timestamp: entry.timestamp,
-          isSidechain: entry.isSidechain || false,
-          content: entry.type === 'user'
-            ? (entry.message?.content || '')
-            : (entry.message?.content || []),
-          usage: entry.message?.usage || null,
-          model: entry.message?.model || null,
-          stopReason: entry.message?.stop_reason || null,
-        });
+        if (isContinuation && lastAssistantMessageRef) {
+          const extra = entry.message?.content;
+          if (Array.isArray(extra)) lastAssistantMessageRef.content = lastAssistantMessageRef.content.concat(extra);
+          if (entry.message?.stop_reason) lastAssistantMessageRef.stopReason = entry.message.stop_reason;
+        } else {
+          const pushed = {
+            uuid: entry.uuid,
+            parentUuid: entry.parentUuid,
+            type: entry.type,
+            timestamp: entry.timestamp,
+            isSidechain: entry.isSidechain || false,
+            content: entry.type === 'user'
+              ? (entry.message?.content || '')
+              : (entry.message?.content || []),
+            usage: entry.message?.usage || null,
+            model: entry.message?.model || null,
+            stopReason: entry.message?.stop_reason || null,
+          };
+          messages.push(pushed);
+          lastAssistantMessageRef = entry.type === 'assistant' ? pushed : null;
+        }
       }
     }
   }
