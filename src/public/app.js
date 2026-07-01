@@ -326,6 +326,8 @@ function renderSessionDetail(session, dirName, file) {
   const durationMs = firstTimestamp && lastTimestamp
     ? new Date(lastTimestamp) - new Date(firstTimestamp) : null;
   const hasAgents = agents && agents.length > 0;
+  const concurrencySegments = hasAgents ? computeConcurrencySegments(agents) : [];
+  const maxParallel = concurrencySegments.reduce((m, s) => Math.max(m, s.count), hasAgents ? 1 : 0);
 
   // MCPs and skills pre-aggregated server-side (main + all subagents)
   const mcpBar = session.sessionMcps?.length
@@ -346,6 +348,7 @@ function renderSessionDetail(session, dirName, file) {
       <div class="meta-item"><div class="meta-label">Duration</div><div class="meta-value">${durationMs != null ? fmtDuration(durationMs) : '—'}</div></div>
       <div class="meta-item"><div class="meta-label">Messages</div><div class="meta-value">${fmt(session.messageCount)}</div></div>
       ${hasAgents ? `<div class="meta-item"><div class="meta-label">Agents</div><div class="meta-value" style="color:var(--purple)">${fmt(agents.length)}</div></div>` : ''}
+      ${maxParallel >= 2 ? `<div class="meta-item"><div class="meta-label">Max parallel</div><div class="meta-value" style="color:var(--orange)">${maxParallel}</div></div>` : ''}
       ${cwd ? `<div class="meta-item"><div class="meta-label">Directory</div><div class="meta-value mono">${escHtml(cwd.replace('/home/olivier-j/', '~/'))}</div></div>` : ''}
       ${gitBranch && gitBranch !== 'HEAD' ? `<div class="meta-item"><div class="meta-label">Branch</div><div class="meta-value mono" style="color:var(--green)">${escHtml(gitBranch)}</div></div>` : ''}
     </div>
@@ -408,6 +411,40 @@ function toggleTimeline(dirName, file) {
 
 const AGENT_COLORS = ['#a78bfa', '#2dd4bf', '#34d399', '#f97316', '#60a5fa', '#f87171', '#fbbf24', '#c084fc', '#38bdf8', '#4ade80'];
 
+// Sweep-line over agent [firstTimestamp, lastTimestamp] intervals → merged
+// segments of constant concurrent-agent count, used to spot parallel work.
+function computeConcurrencySegments(agents) {
+  const intervals = (agents || [])
+    .map(a => ({
+      start: a.firstTimestamp ? new Date(a.firstTimestamp).getTime() : null,
+      end: a.lastTimestamp ? new Date(a.lastTimestamp).getTime() : null,
+      name: a.meta?.description || a.agentId || '',
+    }))
+    .filter(iv => iv.start != null && iv.end != null && iv.end > iv.start);
+  if (!intervals.length) return [];
+
+  const boundaries = [...new Set(intervals.flatMap(iv => [iv.start, iv.end]))].sort((a, b) => a - b);
+
+  const segments = [];
+  for (let k = 0; k < boundaries.length - 1; k++) {
+    const x0 = boundaries[k], x1 = boundaries[k + 1];
+    const mid = (x0 + x1) / 2;
+    const active = intervals.filter(iv => iv.start <= mid && iv.end >= mid);
+    if (!active.length) continue;
+    segments.push({ x0, x1, count: active.length, names: active.map(a => a.name) });
+  }
+
+  const merged = [];
+  for (const seg of segments) {
+    const last = merged[merged.length - 1];
+    const sameSet = last && last.count === seg.count &&
+      last.names.slice().sort().join('|') === seg.names.slice().sort().join('|');
+    if (last && sameSet && last.x1 === seg.x0) last.x1 = seg.x1;
+    else merged.push({ ...seg });
+  }
+  return merged;
+}
+
 const GANTT_LABEL_W = 120;
 const GANTT_ROW_H = 36;
 const GANTT_TOP = 14;
@@ -431,7 +468,12 @@ function computeGanttData(session) {
   tMax += Math.max(5000, (tMax - tMin) * 0.02);
   if (tMax - tMin <= 0) return { empty: 'Instant session' };
 
+  const concurrencySegments = hasAgents ? computeConcurrencySegments(agents) : [];
+  const hasParallelism = concurrencySegments.some(s => s.count >= 2);
+
   const categories = ['👤 User', '🤖 Main AI'];
+  if (hasParallelism) categories.push('⚡ Parallel');
+  const agentRowOffset = 2 + (hasParallelism ? 1 : 0);
   if (hasAgents) {
     for (const agent of agents) categories.push(agent.meta?.description || agent.agentId || '');
   }
@@ -475,11 +517,26 @@ function computeGanttData(session) {
     });
   }
 
+  // ── Parallel-agents row (concurrency sweep) ──
+  if (hasParallelism) {
+    shapes.push({ kind: 'rowBg', catIndex: 2, x0: tMin, x1: tMax, color: '#f97316', opacity: 0.05 });
+    for (const seg of concurrencySegments) {
+      if (seg.count < 2) continue;
+      const opacity = Math.min(0.9, 0.3 + seg.count * 0.15);
+      shapes.push({
+        kind: 'bar', catIndex: 2, x0: seg.x0, x1: seg.x1,
+        color: '#f97316', opacity, minWidth: 4,
+        label: `${seg.count}×`, labelMinWidth: 24,
+        tooltip: `<strong>${seg.count} agents in parallel</strong><br>${seg.names.map(escHtml).join(', ')}<br>${fmtDuration(seg.x1 - seg.x0)}`,
+      });
+    }
+  }
+
   // ── Agent rows ──
   if (hasAgents) {
     for (let i = 0; i < agents.length; i++) {
       const agent = agents[i];
-      const catIndex = 2 + i;
+      const catIndex = agentRowOffset + i;
       const color = AGENT_COLORS[i % AGENT_COLORS.length];
 
       shapes.push({ kind: 'rowBg', catIndex, x0: tMin, x1: tMax, color, opacity: 0.05 });
