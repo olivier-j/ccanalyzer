@@ -3,6 +3,9 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/), versions follow [SemVer](https://semver.org/).
 
+## [2.1.4] — 2026-07-06
+- Docs: add a session-detail screenshot to the README (shown on GitHub and npm).
+
 ## [2.1.3] — 2026-07-06
 - Open the project to contributions: add `LICENSE` (MIT), `CONTRIBUTING.md`,
   `CODE_OF_CONDUCT.md`, `SECURITY.md`, and GitHub issue/PR templates under
