@@ -216,6 +216,11 @@ td {
 tr:last-child td { border-bottom: none; }
 tr:hover td { background: var(--bg3); cursor: pointer; }
 
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--text2); background: var(--border); }
+th.sorted { color: var(--text); }
+.sort-arrow { display: inline-block; margin-left: 4px; font-size: 9px; }
+
 .td-name { color: var(--text); font-weight: 500; max-width: 300px; }
 .td-path { color: var(--text3); font-family: var(--font); font-size: 11px; }
 .td-num { color: var(--text2); text-align: right; }

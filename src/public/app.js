@@ -55,6 +55,46 @@ function show(loading) {
   $('loading').classList.toggle('hidden', !loading);
 }
 
+/* ── Sortable tables ── */
+// Data-driven table with clickable headers. columns: [{ label, render(row), sort(row), asc }].
+// `sort` returns the raw comparable value (number/string); `asc` makes the first
+// click sort ascending (default for text columns) instead of descending.
+// Clicking the active header flips direction. Null/undefined values sort last.
+function mountSortableTable(el, rows, columns, rowAttrs) {
+  const st = { col: null, dir: -1 };
+
+  const compare = (a, b) => {
+    const va = columns[st.col].sort(a);
+    const vb = columns[st.col].sort(b);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    const c = typeof va === 'number' && typeof vb === 'number'
+      ? va - vb : String(va).localeCompare(String(vb));
+    return c * st.dir;
+  };
+
+  function draw() {
+    const ordered = st.col == null ? rows : [...rows].sort(compare);
+    const head = columns.map((c, i) => {
+      const active = st.col === i;
+      const arrow = active ? (st.dir === 1 ? '▲' : '▼') : '';
+      return `<th class="sortable${active ? ' sorted' : ''}" data-col="${i}">${escHtml(c.label)}<span class="sort-arrow">${arrow}</span></th>`;
+    }).join('');
+    const body = ordered.map(r =>
+      `<tr${rowAttrs ? ' ' + rowAttrs(r) : ''}>${columns.map(c => c.render(r)).join('')}</tr>`
+    ).join('');
+    el.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    el.querySelectorAll('th.sortable').forEach(th => th.addEventListener('click', () => {
+      const i = +th.dataset.col;
+      if (st.col === i) st.dir = -st.dir;
+      else { st.col = i; st.dir = columns[i].asc ? 1 : -1; }
+      draw();
+    }));
+  }
+  draw();
+}
+
 /* ── Navigation ── */
 function showView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
@@ -145,24 +185,20 @@ async function loadDashboard() {
       <div class="chart-container" id="activity-chart"></div>
     </div>
     <div class="section-title" style="margin-bottom:12px">Projects <span style="font-weight:400;color:var(--text3)">(${projects.length})</span></div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Project</th><th>Path</th><th>Sessions</th><th>Messages</th><th>Input</th><th>Output</th><th>Cost</th><th>Last activity</th></tr></thead>
-        <tbody>
-          ${projects.map(p => `
-            <tr onclick="loadSessions('${encodeURIComponent(p.dirName)}')">
-              <td class="td-name">${escHtml(p.name)}</td>
-              <td class="td-path" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(p.path)}</td>
-              <td class="td-num">${fmt(p.sessionCount)}</td>
-              <td class="td-num">${fmt(p.totalMessages)}</td>
-              <td class="td-num" style="color:var(--accent)">${fmtMillions(p.totalUsage.input)}</td>
-              <td class="td-num" style="color:var(--green)">${fmtMillions(p.totalUsage.output)}</td>
-              <td class="td-cost">${fmtCost(p.totalCost)}</td>
-              <td class="td-date">${fmtRelative(p.lastActivity)}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>`;
+    <div class="table-wrap" id="projects-table"></div>`;
+
+  const projectColumns = [
+    { label: 'Project', asc: true, sort: p => p.name?.toLowerCase(), render: p => `<td class="td-name">${escHtml(p.name)}</td>` },
+    { label: 'Path', asc: true, sort: p => p.path?.toLowerCase(), render: p => `<td class="td-path" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(p.path)}</td>` },
+    { label: 'Sessions', sort: p => p.sessionCount, render: p => `<td class="td-num">${fmt(p.sessionCount)}</td>` },
+    { label: 'Messages', sort: p => p.totalMessages, render: p => `<td class="td-num">${fmt(p.totalMessages)}</td>` },
+    { label: 'Input', sort: p => p.totalUsage.input, render: p => `<td class="td-num" style="color:var(--accent)">${fmtMillions(p.totalUsage.input)}</td>` },
+    { label: 'Output', sort: p => p.totalUsage.output, render: p => `<td class="td-num" style="color:var(--green)">${fmtMillions(p.totalUsage.output)}</td>` },
+    { label: 'Cost', sort: p => p.totalCost, render: p => `<td class="td-cost">${fmtCost(p.totalCost)}</td>` },
+    { label: 'Last activity', sort: p => p.lastActivity ? new Date(p.lastActivity).getTime() : null, render: p => `<td class="td-date">${fmtRelative(p.lastActivity)}</td>` },
+  ];
+  mountSortableTable($('projects-table'), projects, projectColumns,
+    p => `onclick="loadSessions('${encodeURIComponent(p.dirName)}')"`);
 
   initActivityChart();
 }
@@ -241,26 +277,20 @@ async function loadSessions(dirNameEncoded) {
       <div class="stat-card accent"><div class="label">Input tokens</div><div class="value">${fmtMillions(project.totalUsage.input)}</div></div>
     </div>
     <div class="section-title" style="margin-bottom:12px">Sessions</div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Title</th><th>Model</th><th>Messages</th><th>Agents</th><th>Input</th><th>Output</th><th>Cost</th><th>Date</th></tr></thead>
-        <tbody>
-          ${project.sessions.map(s => `
-            <tr onclick="loadSessionDetail('${encodeURIComponent(dirName)}','${encodeURIComponent(s.file)}','${encodeURIComponent(s.projectDirName || dirName)}')">
-              <td class="td-name" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                ${s.hasSubagents ? '<span style="color:var(--purple);margin-right:6px">⬡</span>' : ''}${escHtml(s.title)}
-              </td>
-              <td><span class="badge badge-model">${escHtml(modelShort(s.model))}</span></td>
-              <td class="td-num">${fmt(s.messageCount)}</td>
-              <td class="td-num">${s.hasSubagents ? `<span style="color:var(--purple)">agents</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-              <td class="td-num" style="color:var(--accent)">${fmtMillions(s.totalUsage.input)}</td>
-              <td class="td-num" style="color:var(--green)">${fmtMillions(s.totalUsage.output)}</td>
-              <td class="td-cost">${fmtCost(s.totalCost)}</td>
-              <td class="td-date">${fmtDate(s.lastTimestamp)} ${fmtTime(s.lastTimestamp)}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>`;
+    <div class="table-wrap" id="sessions-table"></div>`;
+
+  const sessionColumns = [
+    { label: 'Title', asc: true, sort: s => s.title?.toLowerCase(), render: s => `<td class="td-name" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.hasSubagents ? '<span style="color:var(--purple);margin-right:6px">⬡</span>' : ''}${escHtml(s.title)}</td>` },
+    { label: 'Model', asc: true, sort: s => modelShort(s.model), render: s => `<td><span class="badge badge-model">${escHtml(modelShort(s.model))}</span></td>` },
+    { label: 'Messages', sort: s => s.messageCount, render: s => `<td class="td-num">${fmt(s.messageCount)}</td>` },
+    { label: 'Agents', sort: s => s.hasSubagents ? 1 : 0, render: s => `<td class="td-num">${s.hasSubagents ? `<span style="color:var(--purple)">agents</span>` : '<span style="color:var(--text3)">—</span>'}</td>` },
+    { label: 'Input', sort: s => s.totalUsage.input, render: s => `<td class="td-num" style="color:var(--accent)">${fmtMillions(s.totalUsage.input)}</td>` },
+    { label: 'Output', sort: s => s.totalUsage.output, render: s => `<td class="td-num" style="color:var(--green)">${fmtMillions(s.totalUsage.output)}</td>` },
+    { label: 'Cost', sort: s => s.totalCost, render: s => `<td class="td-cost">${fmtCost(s.totalCost)}</td>` },
+    { label: 'Date', sort: s => s.lastTimestamp ? new Date(s.lastTimestamp).getTime() : null, render: s => `<td class="td-date">${fmtDate(s.lastTimestamp)} ${fmtTime(s.lastTimestamp)}</td>` },
+  ];
+  mountSortableTable($('sessions-table'), project.sessions, sessionColumns,
+    s => `onclick="loadSessionDetail('${encodeURIComponent(dirName)}','${encodeURIComponent(s.file)}','${encodeURIComponent(s.projectDirName || dirName)}')"`);
 }
 
 /* ── Session detail ── */
