@@ -3,6 +3,11 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/), versions follow [SemVer](https://semver.org/).
 
+## [2.1.2] — 2026-07-06
+- Docs: add a Docker section to the README and ship a ready-to-use
+  `docker-compose.yaml` + `.env`, documenting the `HOST=0.0.0.0` bind and the
+  `~/.claude` volume mount needed to run ccanalyzer in a container.
+
 ## [2.1.1] — 2026-07-06
 - Fix "connection reset by peer" when running in Docker: the server bound
   hard-coded to `127.0.0.1`, which inside a container only covers the container

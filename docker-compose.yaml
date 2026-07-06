@@ -1,0 +1,17 @@
+services:
+  node:
+    image: node:22-slim
+    restart: unless-stopped
+    environment:
+      - HOST=0.0.0.0                        # bind all interfaces (Docker port-forwarding routes via eth0, not the container loopback)
+      - CLAUDE_CONFIG_DIR=/data/.claude     # where ccanalyzer reads Claude Code sessions from
+    volumes:
+      - ${HOME}/.claude:/data/.claude:ro    # host Claude data, mounted read-only
+    command:
+      - npx
+      - -y
+      - ccanalyzer@2.1.1
+      - -p
+      - ${APP_PORT}
+    ports:
+      - "${APP_PORT}:${APP_PORT}"

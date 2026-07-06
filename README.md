@@ -54,6 +54,46 @@ Example — analyze a secondary profile:
 CLAUDE_CONFIG_DIR=~/.claude-work npx -y ccanalyzer@latest
 ```
 
+## Docker
+
+A ready-to-use [`docker-compose.yaml`](./docker-compose.yaml) is included:
+
+```yaml
+services:
+  node:
+    image: node:22-slim
+    restart: unless-stopped
+    environment:
+      - HOST=0.0.0.0                        # bind all interfaces (see note below)
+      - CLAUDE_CONFIG_DIR=/data/.claude     # where ccanalyzer reads sessions from
+    volumes:
+      - ${HOME}/.claude:/data/.claude:ro    # host Claude data, mounted read-only
+    command: [npx, -y, ccanalyzer@latest, -p, "${APP_PORT}"]
+    ports:
+      - "${APP_PORT}:${APP_PORT}"
+```
+
+With an `.env` next to it:
+
+```
+APP_PORT=3737
+```
+
+Then:
+
+```bash
+docker compose up
+```
+
+Two things are essential in a container:
+
+- **`HOST=0.0.0.0`** — the server defaults to `127.0.0.1`, which inside a
+  container only covers the container loopback. Docker's port-forwarding routes
+  through `eth0`, so without this you get `connection reset by peer`.
+- **Mounting your Claude data** — ccanalyzer reads sessions from
+  `~/.claude/projects/**`. Mount the host's `~/.claude` into the container and
+  point `CLAUDE_CONFIG_DIR` at it, otherwise the dashboard starts up empty.
+
 ## Requirements
 
 - Node.js >= 18

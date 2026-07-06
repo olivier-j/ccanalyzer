@@ -1,6 +1,6 @@
 {
   "name": "ccanalyzer",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Web-based analyzer for Claude Code sessions",
   "bin": {
     "ccanalyzer": "bin/index.js"
