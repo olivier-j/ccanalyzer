@@ -1,6 +1,6 @@
 const express = require('express');
 const path = require('path');
-const { getAllProjects, getSessionDetail, getAgentDetail, getStatsCache } = require('./parser');
+const { getAllProjects, getSessionDetail, getAgentDetail, getStatsCache, getToolUsage } = require('./parser');
 
 function startServer(port = 3737, host = '127.0.0.1') {
   const app = express();
@@ -32,6 +32,11 @@ function startServer(port = 3737, host = '127.0.0.1') {
 
   app.get('/api/stats', (req, res) => {
     try { res.json(getStatsCache() || {}); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get('/api/tool-usage', (req, res) => {
+    try { res.json(getToolUsage()); }
     catch (e) { res.status(500).json({ error: e.message }); }
   });
 

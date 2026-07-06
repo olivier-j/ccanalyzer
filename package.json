@@ -7,7 +7,8 @@
   },
   "main": "./src/server.js",
   "scripts": {
-    "start": "node bin/index.js"
+    "start": "node bin/index.js",
+    "dev": "node --watch bin/index.js"
   },
   "files": [
     "bin/",
