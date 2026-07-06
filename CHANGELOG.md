@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/), versions follow [SemVer](https://semver.org/).
 
+## [2.1.1] — 2026-07-06
+- Fix "connection reset by peer" when running in Docker: the server bound
+  hard-coded to `127.0.0.1`, which inside a container only covers the container
+  loopback, so Docker's port-forwarding (routed via `eth0`) could not reach the
+  backend. The bind host is now configurable via the `HOST` env var or `--host`
+  flag; it still defaults to `127.0.0.1` so local runs stay off the network. Set
+  `HOST=0.0.0.0` in Docker.
+
 ## [2.1.0] — 2026-07-01
 - Add a "Parallel" row to the session timeline (Gantt chart) that highlights time
   segments where 2+ subagents run concurrently, with a count label and tooltip

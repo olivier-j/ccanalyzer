@@ -2,7 +2,7 @@ const express = require('express');
 const path = require('path');
 const { getAllProjects, getSessionDetail, getAgentDetail, getStatsCache } = require('./parser');
 
-function startServer(port = 3737) {
+function startServer(port = 3737, host = '127.0.0.1') {
   const app = express();
   app.use(express.static(path.join(__dirname, 'public')));
 
@@ -36,7 +36,7 @@ function startServer(port = 3737) {
   });
 
   return new Promise((resolve, reject) => {
-    const server = app.listen(port, '127.0.0.1', () => {
+    const server = app.listen(port, host, () => {
       resolve({ url: `http://localhost:${port}`, server });
     });
     server.on('error', reject);

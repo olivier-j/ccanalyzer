@@ -7,7 +7,11 @@ const pIdx = args.indexOf('-p');
 const userPort = pIdx !== -1 && args[pIdx + 1] ? parseInt(args[pIdx + 1], 10) : null;
 const port = userPort || parseInt(process.env.PORT || '3737', 10);
 
-startServer(port).then(({ url }) => {
+const hIdx = args.indexOf('--host');
+const userHost = hIdx !== -1 && args[hIdx + 1] ? args[hIdx + 1] : null;
+const host = userHost || process.env.HOST || '127.0.0.1';
+
+startServer(port, host).then(({ url }) => {
   console.log(`\n  ccanalyzer running at ${url}\n`);
   try {
     import('open').then(m => m.default(url)).catch(() => {});

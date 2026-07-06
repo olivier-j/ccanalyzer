@@ -19,6 +19,17 @@ If port 3737 is already in use, specify a different port with `-p`:
 npx -y ccanalyzer@latest -p 3738
 ```
 
+By default the server binds to `127.0.0.1` (localhost only). To expose it — for
+example when running inside a Docker container where port-forwarding routes
+through `eth0` rather than the container loopback — bind to all interfaces via
+the `HOST` env var or the `--host` flag:
+
+```bash
+HOST=0.0.0.0 npx -y ccanalyzer@latest
+# or
+npx -y ccanalyzer@latest --host 0.0.0.0
+```
+
 ## Features
 
 - **Dashboard** — all projects with token counts, costs, and last activity
