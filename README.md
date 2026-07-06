@@ -5,6 +5,8 @@ A web-based dashboard for analyzing your [Claude Code](https://claude.ai/code) s
 ![Node.js >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen)
 [![npm](https://img.shields.io/npm/v/ccanalyzer)](https://www.npmjs.com/package/ccanalyzer)
 
+![ccanalyzer session detail with Gantt timeline](./docs/screenshot.png)
+
 ## Usage
 
 ```bash
