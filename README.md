@@ -99,6 +99,11 @@ Two things are essential in a container:
 - Node.js >= 18
 - Claude Code sessions in `~/.claude/projects/` (or your custom `CLAUDE_CONFIG_DIR`)
 
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) to get
+started, and please follow the [Code of Conduct](./CODE_OF_CONDUCT.md).
+
 ## License
 
-MIT
+[MIT](./LICENSE)
