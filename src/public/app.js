@@ -9,6 +9,11 @@ const state = {
   ganttData: null,
   msgFilter: 'all',
   timelineOpen: false,
+  toolUsage: null,
+  toolUsagePromise: null,
+  toolsFilter: 'all',
+  toolsMergeNs: false,
+  usageCharts: {},
 };
 
 /* ── Utils ── */
@@ -60,8 +65,16 @@ function show(loading) {
 // `sort` returns the raw comparable value (number/string); `asc` makes the first
 // click sort ascending (default for text columns) instead of descending.
 // Clicking the active header flips direction. Null/undefined values sort last.
-function mountSortableTable(el, rows, columns, rowAttrs) {
-  const st = { col: null, dir: -1 };
+// opts.pageSize (+ opts.pagerEl) paginate long lists: the full list is sorted,
+// then sliced to a page, and a soft pager is drawn into pagerEl. Sorting resets
+// to page 1. Omit opts.pageSize for an un-paginated table (dashboard/sessions).
+function mountSortableTable(el, rows, columns, rowAttrs, opts = {}) {
+  const pageSize = opts.pageSize || 0;
+  const pagerEl = opts.pagerEl || null;
+  // Paginate only when there is a pager to navigate with — a missing pager slot
+  // must not silently hide rows past the first page.
+  const paginate = pageSize > 0 && !!pagerEl;
+  const st = { col: null, dir: -1, page: 0 };
 
   const compare = (a, b) => {
     const va = columns[st.col].sort(a);
@@ -74,14 +87,36 @@ function mountSortableTable(el, rows, columns, rowAttrs) {
     return c * st.dir;
   };
 
+  function renderPager(total) {
+    if (!pagerEl) return;
+    if (total <= pageSize) { pagerEl.innerHTML = ''; return; }
+    const pages = Math.ceil(total / pageSize);
+    const from = st.page * pageSize + 1;
+    const to = Math.min(total, from + pageSize - 1);
+    pagerEl.innerHTML =
+      `<button class="pager-btn" data-d="-1"${st.page === 0 ? ' disabled' : ''}>‹</button>` +
+      `<span class="pager-range">${from}–${to} / ${total}</span>` +
+      `<button class="pager-btn" data-d="1"${st.page >= pages - 1 ? ' disabled' : ''}>›</button>`;
+    pagerEl.querySelectorAll('.pager-btn').forEach(btn => btn.addEventListener('click', () => {
+      st.page += +btn.dataset.d;
+      draw();
+    }));
+  }
+
   function draw() {
     const ordered = st.col == null ? rows : [...rows].sort(compare);
+    let slice = ordered;
+    if (paginate) {
+      const pages = Math.max(1, Math.ceil(ordered.length / pageSize));
+      st.page = Math.min(Math.max(st.page, 0), pages - 1);
+      slice = ordered.slice(st.page * pageSize, st.page * pageSize + pageSize);
+    }
     const head = columns.map((c, i) => {
       const active = st.col === i;
       const arrow = active ? (st.dir === 1 ? '▲' : '▼') : '';
       return `<th class="sortable${active ? ' sorted' : ''}" data-col="${i}">${escHtml(c.label)}<span class="sort-arrow">${arrow}</span></th>`;
     }).join('');
-    const body = ordered.map(r =>
+    const body = slice.map(r =>
       `<tr${rowAttrs ? ' ' + rowAttrs(r) : ''}>${columns.map(c => c.render(r)).join('')}</tr>`
     ).join('');
     el.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
@@ -89,8 +124,10 @@ function mountSortableTable(el, rows, columns, rowAttrs) {
       const i = +th.dataset.col;
       if (st.col === i) st.dir = -st.dir;
       else { st.col = i; st.dir = columns[i].asc ? 1 : -1; }
+      st.page = 0;
       draw();
     }));
+    if (paginate) renderPager(ordered.length);
   }
   draw();
 }
@@ -102,6 +139,10 @@ function showView(name) {
   document.querySelectorAll('.nav-item').forEach(a => {
     a.classList.toggle('active', a.dataset.view === name || a.dataset.view === name.split('-')[0]);
   });
+  // A chart mounted while its view was hidden inits at width 0; resize now-visible ones.
+  for (const arr of Object.values(state.usageCharts || {})) {
+    for (const c of arr) { try { if (c.getDom()?.offsetParent) c.resize(); } catch {} }
+  }
 }
 
 function pushUrl(params) {
@@ -111,8 +152,10 @@ function pushUrl(params) {
 
 function restoreFromUrl() {
   const p = new URLSearchParams(location.search);
+  const view = p.get('view');
   const project = p.get('project');
   const session = p.get('session');
+  if (view === 'tools') return loadToolUsage();
   if (project && session) return loadSessionDetail(encodeURIComponent(project), encodeURIComponent(session));
   if (project) return loadSessions(encodeURIComponent(project));
   loadDashboard();
@@ -120,7 +163,8 @@ function restoreFromUrl() {
 
 window.addEventListener('popstate', e => {
   const d = e.state || {};
-  if (d.session && d.project) loadSessionDetail(encodeURIComponent(d.project), encodeURIComponent(d.session));
+  if (d.view === 'tools') loadToolUsage();
+  else if (d.session && d.project) loadSessionDetail(encodeURIComponent(d.project), encodeURIComponent(d.session));
   else if (d.project) loadSessions(encodeURIComponent(d.project));
   else loadDashboard();
 });
@@ -247,6 +291,308 @@ function initActivityChart() {
   }
 }
 
+/* ── Tool usage ── */
+// Load /api/tool-usage once, sharing a single in-flight request across concurrent
+// callers (tools view + per-project panels) so rapid navigation can't fan out
+// into duplicate multi-second scans. Retries after a failure (promise cleared).
+function fetchToolUsage() {
+  if (state.toolUsage) return Promise.resolve(state.toolUsage);
+  if (!state.toolUsagePromise) {
+    state.toolUsagePromise = api('/api/tool-usage')
+      .then(u => { state.toolUsage = u.projects || []; return state.toolUsage; })
+      .finally(() => { state.toolUsagePromise = null; });
+  }
+  return state.toolUsagePromise;
+}
+
+async function loadToolUsage() {
+  pushUrl({ view: 'tools' });
+  showView('tools');
+  setBreadcrumb(['Tool usage']);
+
+  if (!state.toolUsage) {
+    show(true);
+    try {
+      await Promise.all([
+        fetchToolUsage(),
+        state.projects ? Promise.resolve() : api('/api/projects').then(p => { state.projects = p; }),
+      ]);
+    } catch (e) {
+      $('view-tools').innerHTML = `<div style="padding:40px;color:var(--red)">Error: ${escHtml(e.message)}</div>`;
+      return;
+    } finally { show(false); }
+  }
+  renderToolUsage();
+}
+
+function setToolsFilter(dirName) {
+  state.toolsFilter = dirName || 'all';
+  renderToolUsage();
+}
+
+function setToolsMergeNs(on) {
+  state.toolsMergeNs = !!on;
+  renderToolUsage();
+}
+
+// Merge per-project usage buckets into one; used for the "All projects" view.
+function mergeToolBuckets(list) {
+  const acc = { tools: {}, skills: {}, mcpServers: {}, mcpTools: {}, agents: {}, totalCalls: 0 };
+  for (const b of list) {
+    for (const key of ['tools', 'skills', 'mcpServers', 'mcpTools', 'agents']) {
+      for (const [k, v] of Object.entries(b[key] || {})) acc[key][k] = (acc[key][k] || 0) + v;
+    }
+    acc.totalCalls += b.totalCalls || 0;
+  }
+  return acc;
+}
+
+const rankUsage = obj => Object.entries(obj).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+const sumUsage = obj => Object.values(obj).reduce((s, v) => s + v, 0);
+
+// Collapse "namespace:name" keys into "name" (e.g. babs:smart-commit → smart-commit),
+// summing counts. Used to merge the same skill/agent installed under several
+// namespaces. MCP names use "__" separators so they're unaffected.
+function collapseNamespaces(counts) {
+  const out = {};
+  for (const [k, v] of Object.entries(counts)) {
+    const key = k.replace(/^[\w.-]+:/, '');
+    out[key] = (out[key] || 0) + v;
+  }
+  return out;
+}
+
+// A copy of the bucket with skill and subagent names merged across namespaces.
+function mergeNamespaces(b) {
+  return { ...b, skills: collapseNamespaces(b.skills), agents: collapseNamespaces(b.agents) };
+}
+
+// MCP tool rows with a readable "server / tool" name (e.g. "Atlassian / getJiraIssue").
+function mcpToolRows(b) {
+  return rankUsage(b.mcpTools).map(r => {
+    const parts = r.name.split('__');
+    const server = (parts[1] || '').replace(/^claude_ai_/, '');
+    return { name: `${server} / ${parts.slice(2).join('__')}`, count: r.count };
+  });
+}
+
+// Count tool_use blocks from a message list into a fresh bucket — client-side
+// equivalent of parser.js countToolsInFile, used for the single-conversation
+// breakdown (which only has the main thread loaded, no subagent tool calls).
+function bucketFromMessages(messages) {
+  const b = { tools: {}, skills: {}, mcpServers: {}, mcpTools: {}, agents: {}, totalCalls: 0 };
+  for (const m of (messages || [])) {
+    if (m.type !== 'assistant') continue;
+    for (const block of (Array.isArray(m.content) ? m.content : [])) {
+      if (!block || block.type !== 'tool_use' || !block.name) continue;
+      b.totalCalls++;
+      const name = block.name;
+      if (name.startsWith('mcp__')) {
+        const parts = name.split('__');
+        const server = (parts[1] || '').replace(/^claude_ai_/, '').replace(/_/g, ' ') || '(unknown)';
+        b.mcpServers[server] = (b.mcpServers[server] || 0) + 1;
+        b.mcpTools[name] = (b.mcpTools[name] || 0) + 1;
+      } else if (name === 'Skill') {
+        const s = block.input?.skill || '(unknown)';
+        b.skills[s] = (b.skills[s] || 0) + 1;
+      } else {
+        b.tools[name] = (b.tools[name] || 0) + 1;
+      }
+    }
+  }
+  return b;
+}
+
+// One usage-table block: title + soft-pager slot (filled by mountUsageTable) + the table container.
+function usageTableBlock(title, tblId) {
+  return `<div>
+    <div class="usage-tbl-head"><span class="section-title">${escHtml(title)}</span><span class="usage-pager" id="${tblId}-pager"></span></div>
+    <div class="table-wrap table-static" id="${tblId}"></div>
+  </div>`;
+}
+
+// Two-column count table (Name / Calls), pre-ranked descending, sortable, and
+// paginated (10/page) with a soft pager in the `${elId}-pager` slot next to the title.
+function mountUsageTable(elId, rows, nameLabel, countLabel) {
+  const el = $(elId);
+  if (!el) return;
+  if (!rows.length) { el.innerHTML = `<div class="usage-loading">No data</div>`; return; }
+  mountSortableTable(el, rows, [
+    { label: nameLabel, asc: true, sort: r => r.name.toLowerCase(), render: r => `<td class="td-name" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(r.name)}</td>` },
+    { label: countLabel, sort: r => r.count, render: r => `<td class="td-num">${fmt(r.count)}</td>` },
+  ], null, { pageSize: 10, pagerEl: document.getElementById(`${elId}-pager`) });
+}
+
+// Category → colour for the unified Top-N chart, legend, and per-bar colouring.
+const USAGE_CATEGORIES = [
+  { key: 'internal', label: 'Internal', color: '#4f8ef7', get: b => b.tools },
+  { key: 'skills', label: 'Skills', color: '#a78bfa', get: b => b.skills },
+  { key: 'mcp', label: 'MCP', color: '#2dd4bf', get: b => b.mcpServers },
+  { key: 'agents', label: 'Agents', color: '#34d399', get: b => b.agents },
+];
+
+// Build the item list for a chart: the top `limit` entries of one category, each
+// tagged with its category colour for renderTopChart. Callers pass a single
+// category ('internal'/'skills'/'mcp'); cat='all' would pool every category and
+// `showAgents` gates the agents category — both kept general but unused by the
+// current one-chart-per-category layout.
+function combinedUsageItems(b, cat, showAgents, limit = 20) {
+  const items = [];
+  for (const c of USAGE_CATEGORIES) {
+    if (c.key === 'agents' && !showAgents) continue;
+    if (cat !== 'all' && cat !== c.key) continue;
+    for (const [name, count] of Object.entries(c.get(b))) {
+      items.push({ name, count, color: c.color, cat: c.label });
+    }
+  }
+  items.sort((a, b) => b.count - a.count);
+  return items.slice(0, limit);
+}
+
+// Usage-breakdown component (stat cards + unified chart + sortable tables), shared
+// by the global Tool-usage view, the per-project view, and a single conversation.
+// `prefix` namespaces element ids so several breakdowns can coexist on a page.
+// `opts.category` filters both the chart and tables; `opts.showAgents` (default
+// true) hides subagents when the caller has none (single conversation).
+function usageBreakdownHtml(b, prefix, opts = {}) {
+  const toolRows = rankUsage(b.tools);
+  const skillRows = rankUsage(b.skills);
+  const serverRows = rankUsage(b.mcpServers);
+  const agentRows = rankUsage(b.agents);
+  const showAgents = opts.showAgents !== false;
+
+  const chartH = rows => Math.max(120, Math.min(rows.length, 12) * 26 + 24);
+  const chart = (title, id, rows) => rows.length
+    ? `<div class="chart-section" style="margin-bottom:20px"><h2>${title}</h2><div id="${id}" style="height:${chartH(rows)}px"></div></div>`
+    : '';
+
+  return `
+    <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))">
+      <div class="stat-card accent"><div class="label">Total tool calls</div><div class="value">${fmt(b.totalCalls)}</div></div>
+      <div class="stat-card"><div class="label">Built-in tools</div><div class="value">${fmt(sumUsage(b.tools))}</div><div class="sub">${toolRows.length} distinct</div></div>
+      <div class="stat-card purple"><div class="label">Skill invocations</div><div class="value">${fmt(sumUsage(b.skills))}</div><div class="sub">${skillRows.length} distinct</div></div>
+      <div class="stat-card"><div class="label">MCP calls</div><div class="value">${fmt(sumUsage(b.mcpServers))}</div><div class="sub">${serverRows.length} servers</div></div>
+      ${showAgents ? `<div class="stat-card green"><div class="label">Agents spawned</div><div class="value">${fmt(sumUsage(b.agents))}</div><div class="sub">${agentRows.length} types</div></div>` : ''}
+    </div>
+
+    ${chart('Top tools', `${prefix}-tools-chart`, toolRows)}
+    ${chart('Top skills', `${prefix}-skills-chart`, skillRows)}
+    ${chart('Top MCP servers', `${prefix}-mcp-chart`, serverRows)}
+
+    <div class="tools-tables">
+      ${usageTableBlock('Built-in tools', `${prefix}-tbl-tools`)}
+      ${usageTableBlock('Skills', `${prefix}-tbl-skills`)}
+      ${usageTableBlock('MCP servers', `${prefix}-tbl-mcp`)}
+      ${usageTableBlock('MCP tools', `${prefix}-tbl-mcptools`)}
+      ${showAgents ? usageTableBlock('Subagent types', `${prefix}-tbl-agents`) : ''}
+    </div>`;
+}
+
+// Charts/tables self-skip when their target div is absent, so this can attempt
+// every section unconditionally. Each chart is a single category → single colour.
+function mountUsageBreakdown(b, prefix, opts = {}) {
+  const showAgents = opts.showAgents !== false;
+  (state.usageCharts[prefix] || []).forEach(c => c.dispose());
+  const charts = state.usageCharts[prefix] = [];
+
+  renderTopChart(`${prefix}-tools-chart`, combinedUsageItems(b, 'internal', showAgents, 12), charts);
+  renderTopChart(`${prefix}-skills-chart`, combinedUsageItems(b, 'skills', showAgents, 12), charts);
+  renderTopChart(`${prefix}-mcp-chart`, combinedUsageItems(b, 'mcp', showAgents, 12), charts);
+
+  mountUsageTable(`${prefix}-tbl-tools`, rankUsage(b.tools), 'Tool', 'Calls');
+  mountUsageTable(`${prefix}-tbl-skills`, rankUsage(b.skills), 'Skill', 'Invocations');
+  mountUsageTable(`${prefix}-tbl-mcp`, rankUsage(b.mcpServers), 'Server', 'Calls');
+  mountUsageTable(`${prefix}-tbl-mcptools`, mcpToolRows(b), 'Tool', 'Calls');
+  if (showAgents) mountUsageTable(`${prefix}-tbl-agents`, rankUsage(b.agents), 'Type', 'Count');
+
+  if (!state.usageChartResizeBound) {
+    window.addEventListener('resize', () => {
+      for (const arr of Object.values(state.usageCharts)) {
+        for (const c of arr) if (c.getDom()?.offsetParent) c.resize(); // skip charts in hidden views
+      }
+    });
+    state.usageChartResizeBound = true;
+  }
+}
+
+function renderToolUsage() {
+  const container = $('view-tools');
+  const nameByDir = {};
+  for (const p of (state.projects || [])) nameByDir[p.dirName] = p.name;
+
+  const all = state.toolUsage || [];
+  // Only projects that actually recorded tool calls are worth filtering on.
+  const filterable = all.filter(b => b.totalCalls > 0)
+    .map(b => ({ dirName: b.dirName, name: nameByDir[b.dirName] || b.dirName }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (state.toolsFilter !== 'all' && !all.some(b => b.dirName === state.toolsFilter)) state.toolsFilter = 'all';
+  const scoped = state.toolsFilter === 'all' ? all : all.filter(b => b.dirName === state.toolsFilter);
+  const merged = mergeToolBuckets(scoped);
+  const b = state.toolsMergeNs ? mergeNamespaces(merged) : merged;
+
+  const opt = (v, label) => `<option value="${escHtml(v)}"${state.toolsFilter === v ? ' selected' : ''}>${escHtml(label)}</option>`;
+
+  container.innerHTML = `
+    <div class="page-header">
+      <h1>Tool usage</h1>
+      <div class="subtitle">Tool, skill, MCP and subagent activity across your sessions</div>
+    </div>
+    <div class="tools-filter">
+      <span>Project</span>
+      <select onchange="setToolsFilter(this.value)">
+        ${opt('all', `All projects (${filterable.length})`)}
+        ${filterable.map(p => opt(p.dirName, p.name)).join('')}
+      </select>
+    </div>
+    <label class="ns-toggle" title="Collapse the plugin prefix on skills & subagent types (plugin:name → name). MCP servers are unaffected.">
+      <input type="checkbox" ${state.toolsMergeNs ? 'checked' : ''} onchange="setToolsMergeNs(this.checked)">
+      <span class="ns-label">Merge skill / agent namespaces</span>
+    </label>
+    ${usageBreakdownHtml(b, 'tools')}`;
+
+  mountUsageBreakdown(b, 'tools');
+}
+
+// Unified horizontal bar chart: each bar coloured by its category, tooltip shows
+// the category. `items` come pre-ranked and capped from combinedUsageItems().
+function renderTopChart(elId, items, charts) {
+  const el = document.getElementById(elId);
+  if (!el || !items.length) return;
+  const top = items.slice().reverse(); // reverse → largest bar on top in a horizontal layout
+  const chart = echarts.init(el);
+  charts.push(chart);
+  chart.setOption({
+    grid: { left: 4, right: 48, top: 6, bottom: 6, containLabel: true },
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'shadow' },
+      backgroundColor: '#1a1e28', borderColor: '#1f2433',
+      textStyle: { color: '#e2e8f0' }, extraCssText: 'box-shadow:none',
+      formatter: p => {
+        const d = top[p[0].dataIndex];
+        return `${escHtml(d.name)}<br><span style="color:${d.color}">●</span> ${d.cat} · ${fmt(d.count)}`;
+      },
+    },
+    xAxis: {
+      type: 'value',
+      axisLabel: { color: '#5a6478', fontSize: 10 },
+      axisLine: { show: false }, axisTick: { show: false },
+      splitLine: { lineStyle: { color: '#1f2433' } },
+    },
+    yAxis: {
+      type: 'category', data: top.map(i => i.name),
+      axisLabel: { color: '#8892a4', fontSize: 11 },
+      axisLine: { show: false }, axisTick: { show: false },
+    },
+    series: [{
+      type: 'bar',
+      data: top.map(i => ({ value: i.count, itemStyle: { color: i.color, borderRadius: [0, 3, 3, 0] } })),
+      barMaxWidth: 16,
+      label: { show: true, position: 'right', color: '#5a6478', fontSize: 10 },
+    }],
+  });
+}
+
 /* ── Sessions list ── */
 async function loadSessions(dirNameEncoded) {
   const dirName = decodeURIComponent(dirNameEncoded);
@@ -277,7 +623,10 @@ async function loadSessions(dirNameEncoded) {
       <div class="stat-card accent"><div class="label">Input tokens</div><div class="value">${fmtMillions(project.totalUsage.input)}</div></div>
     </div>
     <div class="section-title" style="margin-bottom:12px">Sessions</div>
-    <div class="table-wrap" id="sessions-table"></div>`;
+    <div class="table-wrap" id="sessions-table"></div>
+
+    <div class="section-title" style="margin:28px 0 12px">Tool usage</div>
+    <div id="proj-usage"><div class="usage-loading">Loading…</div></div>`;
 
   const sessionColumns = [
     { label: 'Title', asc: true, sort: s => s.title?.toLowerCase(), render: s => `<td class="td-name" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.hasSubagents ? '<span style="color:var(--purple);margin-right:6px">⬡</span>' : ''}${escHtml(s.title)}</td>` },
@@ -291,6 +640,26 @@ async function loadSessions(dirNameEncoded) {
   ];
   mountSortableTable($('sessions-table'), project.sessions, sessionColumns,
     s => `onclick="loadSessionDetail('${encodeURIComponent(dirName)}','${encodeURIComponent(s.file)}','${encodeURIComponent(s.projectDirName || dirName)}')"`);
+
+  loadProjectUsage(dirName);
+}
+
+// Lazily fill the per-project tool-usage breakdown so the sessions table renders
+// immediately (the scan can take seconds cold) and a tool-usage fetch failure
+// degrades only this panel instead of breaking project navigation.
+async function loadProjectUsage(dirName) {
+  const host = $('proj-usage');
+  if (!host) return;
+  try {
+    await fetchToolUsage();
+  } catch (e) {
+    host.innerHTML = `<div class="usage-loading" style="color:var(--red)">Tool usage unavailable: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  if (!host.isConnected) return; // user navigated to another project while the scan was in flight
+  const projBucket = mergeToolBuckets((state.toolUsage || []).filter(x => x.dirName === dirName));
+  host.innerHTML = usageBreakdownHtml(projBucket, 'proj');
+  mountUsageBreakdown(projBucket, 'proj');
 }
 
 /* ── Session detail ── */
@@ -367,6 +736,15 @@ function renderSessionDetail(session, dirName, file) {
     ? `<div class="session-tools-bar">${session.sessionSkills.map(s => `<span class="usage-chip"><span class="tag-skill">skill</span>${escHtml(s)}</span>`).join('')}</div>`
     : '';
 
+  // Per-conversation breakdown, computed client-side from the loaded main
+  // thread (subagent tool calls aren't in this payload — hence showAgents:false).
+  const convBucket = bucketFromMessages(session.messages);
+  const convToolsSection = convBucket.totalCalls > 0 ? `
+    <details class="conv-tools">
+      <summary>⚙ Tool usage — ${fmt(convBucket.totalCalls)} calls (excl. subagents)</summary>
+      <div style="padding-top:16px">${usageBreakdownHtml(convBucket, 'conv', { showAgents: false })}</div>
+    </details>` : '';
+
   container.innerHTML = `
     <button class="back-btn" onclick="loadSessions('${encodeURIComponent(dirName)}')">← Sessions</button>
     <div class="page-header">
@@ -405,6 +783,8 @@ function renderSessionDetail(session, dirName, file) {
       <div id="timeline-detail" class="tl-detail hidden"></div>
     </div>
 
+    ${convToolsSection}
+
     ${hasAgents || subAgentMessages > 0 ? `
     <div class="filter-bar">
       <span style="font-size:12px;color:var(--text3)">Messages:</span>
@@ -418,6 +798,15 @@ function renderSessionDetail(session, dirName, file) {
 
   state.ganttChart = null;
   if (state.timelineOpen) renderGanttChart(session, dirName, file);
+
+  // Charts init at width 0 inside the collapsed <details>; size them on expand.
+  if (convBucket.totalCalls > 0) {
+    mountUsageBreakdown(convBucket, 'conv', { showAgents: false });
+    const details = container.querySelector('.conv-tools');
+    details?.addEventListener('toggle', () => {
+      if (details.open) (state.usageCharts.conv || []).forEach(c => c.resize());
+    });
+  }
 }
 
 /* ── Timeline / Gantt ── */
@@ -1184,6 +1573,7 @@ document.querySelectorAll('.nav-item').forEach(a => {
   a.addEventListener('click', e => {
     e.preventDefault();
     if (a.dataset.view === 'dashboard') loadDashboard();
+    else if (a.dataset.view === 'tools') loadToolUsage();
   });
 });
 
@@ -1194,6 +1584,9 @@ document.addEventListener('keydown', e => {
 window.loadSessions = loadSessions;
 window.loadSessionDetail = loadSessionDetail;
 window.loadDashboard = loadDashboard;
+window.loadToolUsage = loadToolUsage;
+window.setToolsFilter = setToolsFilter;
+window.setToolsMergeNs = setToolsMergeNs;
 window.setMsgFilter = setMsgFilter;
 window.toggleTimeline = toggleTimeline;
 window.closeAgentModal = closeAgentModal;

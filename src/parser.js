@@ -372,6 +372,104 @@ function collectToolsUsed(filePath) {
   return { mcps, skills };
 }
 
+// Count every tool_use block in a JSONL file into the provided buckets.
+// Partitions calls into MCP (by server + full tool name), skills (by skill
+// name), and built-in tools (everything else). Each tool_use appears on
+// exactly one streamed line, so no continuation-dedup is needed here.
+function countToolsInFile(filePath, b) {
+  for (const entry of parseLines(filePath)) {
+    if (entry.type !== 'assistant') continue;
+    for (const block of (entry.message?.content || [])) {
+      if (!block || block.type !== 'tool_use' || !block.name) continue;
+      b.totalCalls++;
+      const name = block.name;
+      if (name.startsWith('mcp__')) {
+        const parts = name.split('__');
+        const server = (parts[1] || '').replace(/^claude_ai_/, '').replace(/_/g, ' ') || '(unknown)';
+        b.mcpServers[server] = (b.mcpServers[server] || 0) + 1;
+        b.mcpTools[name] = (b.mcpTools[name] || 0) + 1;
+      } else if (name === 'Skill') {
+        const s = block.input?.skill || '(unknown)';
+        b.skills[s] = (b.skills[s] || 0) + 1;
+      } else {
+        b.tools[name] = (b.tools[name] || 0) + 1;
+      }
+    }
+  }
+}
+
+// Aggregate tool / skill / MCP / subagent usage per project (worktrees merged
+// into their parent). The frontend joins each entry to a project name via
+// dirName (from /api/projects) and rolls the per-project buckets up to a
+// global view or filters to one project. Subagent tool calls are included in
+// the same buckets as the main thread; subagent *types* are counted separately.
+//
+// The scan reads every session + subagent JSONL synchronously (seconds on a
+// large history) and would block the single-threaded server on each hit, so the
+// result is memoised for a short TTL — the tools view and every per-project view
+// share one scan, and rapid reloads are instant.
+// Trade-off: unlike /api/projects (always re-scanned), newly written sessions
+// surface in tool-usage only after at most TOOL_USAGE_TTL_MS.
+let _toolUsageCache = null;
+let _toolUsageCacheAt = 0;
+const TOOL_USAGE_TTL_MS = 60_000;
+
+function getToolUsage() {
+  if (_toolUsageCache && Date.now() - _toolUsageCacheAt < TOOL_USAGE_TTL_MS) return _toolUsageCache;
+  const result = computeToolUsage();
+  _toolUsageCache = result;
+  _toolUsageCacheAt = Date.now();
+  return result;
+}
+
+function computeToolUsage() {
+  if (!fs.existsSync(PROJECTS_DIR)) return { projects: [] };
+
+  const projectDirs = fs.readdirSync(PROJECTS_DIR).filter(d =>
+    fs.statSync(path.join(PROJECTS_DIR, d)).isDirectory());
+
+  const byParent = new Map();
+  const newBuckets = () => ({ tools: {}, skills: {}, mcpServers: {}, mcpTools: {}, agents: {}, totalCalls: 0 });
+  const mergeInto = (dst, src) => {
+    for (const key of ['tools', 'skills', 'mcpServers', 'mcpTools', 'agents']) {
+      for (const [k, v] of Object.entries(src[key])) dst[key][k] = (dst[key][k] || 0) + v;
+    }
+    dst.totalCalls += src.totalCalls;
+  };
+
+  for (const dirName of projectDirs) {
+    const projectPath = path.join(PROJECTS_DIR, dirName);
+    const sessionFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
+    if (sessionFiles.length === 0) continue;
+
+    const isWorktree = dirName.includes(WORKTREE_SEP);
+    const parentDirName = isWorktree ? dirName.split(WORKTREE_SEP)[0] : dirName;
+    const b = newBuckets();
+
+    for (const sf of sessionFiles) {
+      countToolsInFile(path.join(projectPath, sf), b);
+
+      const sessionId = sf.replace('.jsonl', '');
+      const subagentsDir = path.join(projectPath, sessionId, 'subagents');
+      if (!fs.existsSync(subagentsDir)) continue;
+      for (const f of fs.readdirSync(subagentsDir)) {
+        if (f.endsWith('.jsonl')) {
+          countToolsInFile(path.join(subagentsDir, f), b);
+        } else if (f.endsWith('.meta.json')) {
+          let type = '(unknown)';
+          try { type = JSON.parse(fs.readFileSync(path.join(subagentsDir, f), 'utf8')).agentType || type; } catch {}
+          b.agents[type] = (b.agents[type] || 0) + 1;
+        }
+      }
+    }
+
+    if (byParent.has(parentDirName)) mergeInto(byParent.get(parentDirName), b);
+    else byParent.set(parentDirName, { dirName: parentDirName, ...b });
+  }
+
+  return { projects: Array.from(byParent.values()) };
+}
+
 function getSessionDetail(dirName, sessionFile) {
   const filePath = path.join(PROJECTS_DIR, dirName, sessionFile);
   if (!fs.existsSync(filePath)) throw new Error('Session not found');
@@ -422,4 +520,4 @@ function getStatsCache() {
   try { return JSON.parse(fs.readFileSync(statsFile, 'utf8')); } catch { return null; }
 }
 
-module.exports = { getAllProjects, getSessionDetail, getAgentDetail, getStatsCache, calcCost };
+module.exports = { getAllProjects, getSessionDetail, getAgentDetail, getStatsCache, getToolUsage, calcCost };

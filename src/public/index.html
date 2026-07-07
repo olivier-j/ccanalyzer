@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ccanalyzer</title>
-  <link rel="stylesheet" href="style.css?v=13" />
+  <link rel="stylesheet" href="style.css?v=24" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
 </head>
 <body>
@@ -18,12 +18,16 @@
         <a href="#" class="nav-item active" data-view="dashboard">
           <span class="nav-icon">⬡</span> Dashboard
         </a>
+        <a href="#" class="nav-item" data-view="tools">
+          <span class="nav-icon">⚙</span> Tool usage
+        </a>
       </div>
       <div id="breadcrumb"></div>
     </nav>
 
     <main id="content">
       <div id="view-dashboard" class="view"></div>
+      <div id="view-tools" class="view hidden"></div>
       <div id="view-sessions" class="view hidden"></div>
       <div id="view-session-detail" class="view hidden"></div>
     </main>
@@ -33,6 +37,6 @@
     <div class="spinner"></div>
   </div>
 
-  <script src="app.js?v=13"></script>
+  <script src="app.js?v=24"></script>
 </body>
 </html>

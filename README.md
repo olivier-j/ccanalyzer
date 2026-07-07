@@ -34,9 +34,10 @@ npx -y ccanalyzer@latest --host 0.0.0.0
 
 ## Features
 
-- **Dashboard** — all projects with token counts, costs, and last activity
-- **Session browser** — list sessions per project sorted by recency
-- **Session detail** — full message thread with token/cost breakdown per exchange
+- **Dashboard** — all projects with token counts, costs, and last activity (sortable columns)
+- **Tool usage** — tool, skill, MCP-server and subagent activity, globally or filtered per project, as charts + sortable tables
+- **Session browser** — list sessions per project sorted by recency, with a per-project tool-usage breakdown
+- **Session detail** — full message thread with token/cost breakdown per exchange, plus a per-conversation tool-usage panel
 - **Gantt timeline** — visual timeline of user turns, AI responses, and spawned agents
   - Click a **message bar** → see the exchange inline
   - Click an **agent bar** → open the full agent conversation in a popup
@@ -95,6 +96,28 @@ Two things are essential in a container:
 - **Mounting your Claude data** — ccanalyzer reads sessions from
   `~/.claude/projects/**`. Mount the host's `~/.claude` into the container and
   point `CLAUDE_CONFIG_DIR` at it, otherwise the dashboard starts up empty.
+
+## Development
+
+To run from a local clone (instead of `npx`):
+
+```bash
+git clone https://github.com/olivier-j/ccanalyzer.git
+cd ccanalyzer
+npm install
+npm run dev
+```
+
+`npm run dev` uses Node's built-in `--watch`, so the server restarts on changes
+to `src/parser.js` / `src/server.js`. Frontend edits (`src/public/**`) are served
+statically — just refresh the browser (hard-refresh, as assets are cache-busted
+with `?v=`). Use `npm start` for a plain run without the watcher.
+
+The same flags and env vars apply as above, e.g.:
+
+```bash
+PORT=3738 CLAUDE_CONFIG_DIR=~/.claude-work npm run dev
+```
 
 ## Requirements
 

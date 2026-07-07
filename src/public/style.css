@@ -221,6 +221,121 @@ th.sortable:hover { color: var(--text2); background: var(--border); }
 th.sorted { color: var(--text); }
 .sort-arrow { display: inline-block; margin-left: 4px; font-size: 9px; }
 
+/* Static (non-navigable) tables: no row-click affordance. */
+.table-static tr:hover td { cursor: default; }
+
+.usage-loading { padding: 16px; color: var(--text3); font-size: 12px; }
+
+/* Usage table header row: title + soft pager (20 rows/page). */
+.usage-tbl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.usage-tbl-head .section-title { margin-bottom: 0; }
+.usage-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text3);
+}
+.pager-range { font-variant-numeric: tabular-nums; }
+.pager-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  background: var(--bg3);
+  color: var(--text2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.pager-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+.pager-btn:disabled { opacity: 0.35; cursor: default; }
+
+/* ── Tool usage ── */
+.tools-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  font-size: 12px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.tools-filter select {
+  background: var(--bg3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+  min-width: 220px;
+}
+.tools-filter select:focus { outline: none; border-color: var(--accent); }
+.ns-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  margin-bottom: 22px;
+  padding: 10px 16px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text2);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.ns-toggle:hover { border-color: var(--border2); color: var(--text); }
+.ns-toggle:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg2));
+  color: var(--text);
+}
+.ns-toggle input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); flex-shrink: 0; }
+.ns-label { font-weight: 500; }
+
+.tools-tables {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+.conv-tools {
+  border: 1px solid var(--border);
+  border-radius: var(--radius2);
+  background: var(--bg2);
+  padding: 12px 16px;
+  margin-bottom: 14px;
+}
+.conv-tools > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text2);
+  list-style: none;
+  user-select: none;
+}
+.conv-tools > summary::-webkit-details-marker { display: none; }
+.conv-tools > summary::before { content: '▶ '; font-size: 10px; color: var(--text3); }
+.conv-tools[open] > summary::before { content: '▼ '; }
+
 .td-name { color: var(--text); font-weight: 500; max-width: 300px; }
 .td-path { color: var(--text3); font-family: var(--font); font-size: 11px; }
 .td-num { color: var(--text2); text-align: right; }
