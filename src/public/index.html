@@ -4,7 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ccanalyzer</title>
-  <link rel="stylesheet" href="style.css?v=24" />
+  <script>
+    (function () {
+      var saved = localStorage.getItem('cca-theme');
+      var theme = saved || ((window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
+  <link rel="stylesheet" href="style.css?v=25" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
 </head>
 <body>
@@ -22,7 +29,16 @@
           <span class="nav-icon">⚙</span> Tool usage
         </a>
       </div>
-      <div id="breadcrumb"></div>
+      <div id="sidebar-bottom">
+        <div id="breadcrumb"></div>
+        <div id="theme-toggle">
+          <span class="theme-icon">☀</span>
+          <button id="theme-switch" class="theme-switch" type="button" role="switch" aria-checked="false" aria-label="Toggle light/dark theme">
+            <span class="theme-switch-knob"></span>
+          </button>
+          <span class="theme-icon">☾</span>
+        </div>
+      </div>
     </nav>
 
     <main id="content">
@@ -37,6 +53,6 @@
     <div class="spinner"></div>
   </div>
 
-  <script src="app.js?v=24"></script>
+  <script src="app.js?v=25"></script>
 </body>
 </html>

@@ -51,6 +51,72 @@ function modelShort(model) {
   return model.replace('claude-', '').replace(/-\d{8}$/, '');
 }
 
+/* ── Theme ── */
+function chartColors() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = name => cs.getPropertyValue(name).trim();
+  return {
+    text: v('--text'),
+    muted: v('--text2'),
+    faint: v('--text3'),
+    tooltipBg: v('--bg3'),
+    tooltipBorder: v('--bg4'),
+    axisLine: v('--border2'),
+    splitLine: v('--border'),
+  };
+}
+
+// Patches colors on already-mounted chart instances (merge, no re-layout) so
+// toggling theme doesn't require refetching data or losing scroll/open state.
+function applyChartTheme() {
+  const c = chartColors();
+  const tooltip = { backgroundColor: c.tooltipBg, borderColor: c.tooltipBorder, textStyle: { color: c.text } };
+  const axis = {
+    axisLabel: { color: c.faint },
+    axisLine: { lineStyle: { color: c.axisLine } },
+    splitLine: { lineStyle: { color: c.splitLine } },
+  };
+
+  if (state.activityChart) {
+    state.activityChart.setOption({ legend: { textStyle: { color: c.muted } }, tooltip, xAxis: axis, yAxis: axis });
+  }
+  if (state.ganttChart) {
+    state.ganttChart.setOption({
+      tooltip,
+      xAxis: { axisLabel: { color: c.faint }, axisLine: { lineStyle: { color: c.axisLine } }, axisTick: { lineStyle: { color: c.axisLine } }, splitLine: { lineStyle: { color: c.splitLine } } },
+      yAxis: { axisLabel: { color: c.faint } },
+    });
+  }
+  for (const arr of Object.values(state.usageCharts || {})) {
+    for (const chart of arr) {
+      chart.setOption({
+        tooltip,
+        xAxis: { axisLabel: { color: c.faint }, splitLine: { lineStyle: { color: c.splitLine } } },
+        yAxis: { axisLabel: { color: c.muted } },
+        series: [{ label: { color: c.faint } }],
+      });
+    }
+  }
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('cca-theme', theme);
+  const btn = $('theme-switch');
+  if (btn) btn.setAttribute('aria-checked', theme === 'light' ? 'true' : 'false');
+  applyChartTheme();
+}
+
+function initTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const btn = $('theme-switch');
+  if (!btn) return;
+  btn.setAttribute('aria-checked', current === 'light' ? 'true' : 'false');
+  btn.addEventListener('click', () => {
+    applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
+  });
+}
+
 function escHtml(s) {
   if (s == null) return '';
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -258,26 +324,27 @@ function initActivityChart() {
   const sorted = [...daily].sort((a, b) => a.date.localeCompare(b.date));
   const chart = echarts.init(el);
   state.activityChart = chart;
+  const c = chartColors();
   chart.setOption({
     color: ['rgba(79,142,247,0.7)', 'rgba(167,139,250,0.6)'],
     grid: { left: 36, right: 12, top: 28, bottom: 24 },
-    legend: { top: 0, textStyle: { color: '#8892a4', fontSize: 11 } },
+    legend: { top: 0, textStyle: { color: c.muted, fontSize: 11 } },
     tooltip: {
       trigger: 'axis', axisPointer: { type: 'shadow' },
-      backgroundColor: '#1a1e28', borderColor: '#1f2433',
-      textStyle: { color: '#e2e8f0' },
+      backgroundColor: c.tooltipBg, borderColor: c.tooltipBorder,
+      textStyle: { color: c.text },
       extraCssText: 'box-shadow:none',
     },
     xAxis: {
       type: 'category', data: sorted.map(d => d.date.slice(5)),
-      axisLabel: { color: '#5a6478', fontSize: 10 },
-      axisLine: { lineStyle: { color: '#1f2433' } },
+      axisLabel: { color: c.faint, fontSize: 10 },
+      axisLine: { lineStyle: { color: c.axisLine } },
       axisTick: { show: false },
     },
     yAxis: {
       type: 'value',
-      axisLabel: { color: '#5a6478', fontSize: 10 },
-      splitLine: { lineStyle: { color: '#1f2433' } },
+      axisLabel: { color: c.faint, fontSize: 10 },
+      splitLine: { lineStyle: { color: c.splitLine } },
     },
     series: [
       { name: 'Messages', type: 'bar', data: sorted.map(d => d.messageCount), itemStyle: { borderRadius: [3, 3, 0, 0] } },
@@ -562,12 +629,13 @@ function renderTopChart(elId, items, charts) {
   const top = items.slice().reverse(); // reverse → largest bar on top in a horizontal layout
   const chart = echarts.init(el);
   charts.push(chart);
+  const c = chartColors();
   chart.setOption({
     grid: { left: 4, right: 48, top: 6, bottom: 6, containLabel: true },
     tooltip: {
       trigger: 'axis', axisPointer: { type: 'shadow' },
-      backgroundColor: '#1a1e28', borderColor: '#1f2433',
-      textStyle: { color: '#e2e8f0' }, extraCssText: 'box-shadow:none',
+      backgroundColor: c.tooltipBg, borderColor: c.tooltipBorder,
+      textStyle: { color: c.text }, extraCssText: 'box-shadow:none',
       formatter: p => {
         const d = top[p[0].dataIndex];
         return `${escHtml(d.name)}<br><span style="color:${d.color}">●</span> ${d.cat} · ${fmt(d.count)}`;
@@ -575,20 +643,20 @@ function renderTopChart(elId, items, charts) {
     },
     xAxis: {
       type: 'value',
-      axisLabel: { color: '#5a6478', fontSize: 10 },
+      axisLabel: { color: c.faint, fontSize: 10 },
       axisLine: { show: false }, axisTick: { show: false },
-      splitLine: { lineStyle: { color: '#1f2433' } },
+      splitLine: { lineStyle: { color: c.splitLine } },
     },
     yAxis: {
       type: 'category', data: top.map(i => i.name),
-      axisLabel: { color: '#8892a4', fontSize: 11 },
+      axisLabel: { color: c.muted, fontSize: 11 },
       axisLine: { show: false }, axisTick: { show: false },
     },
     series: [{
       type: 'bar',
       data: top.map(i => ({ value: i.count, itemStyle: { color: i.color, borderRadius: [0, 3, 3, 0] } })),
       barMaxWidth: 16,
-      label: { show: true, position: 'right', color: '#5a6478', fontSize: 10 },
+      label: { show: true, position: 'right', color: c.faint, fontSize: 10 },
     }],
   });
 }
@@ -1007,6 +1075,7 @@ function renderGanttChart(session, dirName, file) {
   if (state.ganttChart) { state.ganttChart.dispose(); state.ganttChart = null; }
   const chart = echarts.init(el);
   state.ganttChart = chart;
+  const c = chartColors();
 
   const { categories, shapes, tMin, tMax } = data;
 
@@ -1059,20 +1128,20 @@ function renderGanttChart(session, dirName, file) {
     grid: { left: GANTT_LABEL_W, right: 16, top: GANTT_TOP, bottom: GANTT_BOTTOM },
     xAxis: {
       type: 'value', min: tMin, max: tMax,
-      axisLabel: { color: '#5a6478', fontSize: 9, formatter: v => fmtDuration(v - tMin) },
-      axisLine: { lineStyle: { color: '#252b3a' } },
-      axisTick: { lineStyle: { color: '#2e3650' } },
-      splitLine: { lineStyle: { color: '#1a1e28' } },
+      axisLabel: { color: c.faint, fontSize: 9, formatter: v => fmtDuration(v - tMin) },
+      axisLine: { lineStyle: { color: c.axisLine } },
+      axisTick: { lineStyle: { color: c.axisLine } },
+      splitLine: { lineStyle: { color: c.splitLine } },
     },
     yAxis: {
       type: 'category', data: categories, inverse: true,
       axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false },
-      axisLabel: { color: '#5a6478', fontSize: 10, width: GANTT_LABEL_W - 16, overflow: 'truncate' },
+      axisLabel: { color: c.faint, fontSize: 10, width: GANTT_LABEL_W - 16, overflow: 'truncate' },
     },
     tooltip: {
       trigger: 'item',
-      backgroundColor: '#1a1e28', borderColor: '#1f2433',
-      textStyle: { color: '#e2e8f0', fontSize: 12 },
+      backgroundColor: c.tooltipBg, borderColor: c.tooltipBorder,
+      textStyle: { color: c.text, fontSize: 12 },
       extraCssText: 'box-shadow:none',
       formatter: params => shapes[params.dataIndex]?.tooltip || '',
     },
@@ -1569,6 +1638,8 @@ function renderMessage(m, i, ctx, activeAgent) {
 }
 
 /* ── Init ── */
+initTheme();
+
 document.querySelectorAll('.nav-item').forEach(a => {
   a.addEventListener('click', e => {
     e.preventDefault();
