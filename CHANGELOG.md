@@ -3,6 +3,15 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/), versions follow [SemVer](https://semver.org/).
 
+## [2.1.5] — 2026-07-07
+- Add a tool/skill/MCP usage dashboard: `src/parser.js` now aggregates tool,
+  skill, and MCP invocations, surfaced in a new dashboard view in the frontend.
+- Republish the sortable project/session table columns: the feature was merged
+  before 2.1.4 but the 2.1.4 npm artifact was built from a stale working tree
+  and shipped the pre-merge `app.js`, so the sortable columns never reached npm.
+  This release ships the correct, up-to-date sources.
+- Dev: add a `dev` npm script (`node --watch bin/index.js`).
+
 ## [2.1.4] — 2026-07-06
 - Docs: add a session-detail screenshot to the README (shown on GitHub and npm).
 
