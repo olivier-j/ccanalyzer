@@ -57,6 +57,36 @@ Example — analyze a secondary profile:
 CLAUDE_CONFIG_DIR=~/.claude-work npx -y ccanalyzer@latest
 ```
 
+## Analyzing OpenCode sessions (experimental)
+
+ccanalyzer can also analyze [OpenCode](https://opencode.ai) sessions. OpenCode
+stores its data in a local SQLite database (`opencode.db`); ccanalyzer reads it
+**read-only** and maps it onto the same dashboard, session browser, Gantt
+timeline, and tool-usage views.
+
+```bash
+# via flag
+npx -y ccanalyzer@latest --source opencode
+
+# or via env
+CCANALYZER_SOURCE=opencode npx -y ccanalyzer@latest
+```
+
+- The default source stays **Claude Code** (`--source claude`); nothing changes
+  for existing users.
+- Costs are taken from OpenCode's own per-message figures, so multi-provider
+  models (Anthropic, Google, OpenAI, …) are reported accurately.
+- By default ccanalyzer looks for the database under
+  `$XDG_DATA_HOME/opencode` (falling back to `~/.local/share/opencode`).
+  Override the location with `OPENCODE_DATA_DIR`:
+
+  ```bash
+  OPENCODE_DATA_DIR=/path/to/opencode npx -y ccanalyzer@latest --source opencode
+  ```
+
+> **Note:** the OpenCode source uses Node's built-in `node:sqlite`, which
+> requires **Node 22+**. The Claude Code source still runs on Node 18+.
+
 ## Docker
 
 A ready-to-use [`docker-compose.yaml`](./docker-compose.yaml) is included:

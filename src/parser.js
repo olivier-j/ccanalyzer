@@ -5,6 +5,9 @@ const os = require('os');
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 
+// Full message bodies are streamed to the client in pages of this size.
+const MESSAGE_PAGE_SIZE = 150;
+
 const MODEL_PRICING = {
   'claude-opus-4': { input: 15, output: 75, cache_write: 18.75, cache_read: 1.5 },
   'claude-opus-3': { input: 15, output: 75, cache_write: 18.75, cache_read: 1.5 },
@@ -470,11 +473,34 @@ function computeToolUsage() {
   return { projects: Array.from(byParent.values()) };
 }
 
+// Full (non-light) parse cache, keyed by path and invalidated by mtime+size.
+// Makes getSessionDetail / getSessionMessagesPage / getSessionInsights reuse a
+// single parse instead of re-reading the whole JSONL on every page fetch — the
+// key to efficient pagination on large Claude sessions.
+const _fullParseCache = new Map();
+const FULL_PARSE_CACHE_MAX = 24;
+
+function parseSessionCached(filePath) {
+  try {
+    const st = fs.statSync(filePath);
+    const hit = _fullParseCache.get(filePath);
+    if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.session;
+    const session = parseSessionFile(filePath, false);
+    _fullParseCache.set(filePath, { mtimeMs: st.mtimeMs, size: st.size, session });
+    if (_fullParseCache.size > FULL_PARSE_CACHE_MAX) {
+      _fullParseCache.delete(_fullParseCache.keys().next().value);
+    }
+    return session;
+  } catch {
+    return parseSessionFile(filePath, false);
+  }
+}
+
 function getSessionDetail(dirName, sessionFile) {
   const filePath = path.join(PROJECTS_DIR, dirName, sessionFile);
   if (!fs.existsSync(filePath)) throw new Error('Session not found');
 
-  const session = parseSessionFile(filePath, false);
+  const session = parseSessionCached(filePath);
 
   // Load subagents if the session directory exists
   const sessionId = sessionFile.replace('.jsonl', '');
@@ -504,14 +530,107 @@ function getSessionDetail(dirName, sessionFile) {
     skills.forEach(s => allSkills.add(s));
   }
 
-  return { ...session, agents, sessionMcps: [...allMcps], sessionSkills: [...allSkills] };
+  // Two-tier payload: ship a compact per-message timeline (for the Gantt) + the
+  // aggregated conversation tool bucket + only the FIRST page of full message
+  // bodies. The rest stream in via getSessionMessagesPage.
+  const allMessages = session.messages;
+  const timeline = allMessages.map(toTimelineStub);
+  const convTools = bucketFromMessages(allMessages);
+  const firstPage = allMessages.slice(0, MESSAGE_PAGE_SIZE);
+
+  return {
+    ...session,
+    messages: firstPage,
+    messageCount: allMessages.length,
+    messagePageSize: MESSAGE_PAGE_SIZE,
+    messageNextOffset: firstPage.length,
+    messagesDone: firstPage.length >= allMessages.length,
+    timeline,
+    convTools,
+    agents,
+    sessionMcps: [...allMcps],
+    sessionSkills: [...allSkills],
+  };
+}
+
+// Contract parity with the OpenCode source. Claude sessions are small, so
+// getSessionDetail already ships the timeline/convTools inline (the frontend
+// won't fetch this) — this exists so the /insights route works for both.
+function getSessionInsights(dirName, sessionFile) {
+  const d = getSessionDetail(dirName, sessionFile);
+  return {
+    timeline: d.timeline,
+    convTools: d.convTools,
+    sessionMcps: d.sessionMcps,
+    sessionSkills: d.sessionSkills,
+    agents: d.agents,
+  };
+}
+
+// One page of full message bodies for the scrollable list.
+function getSessionMessagesPage(dirName, sessionFile, offset, limit) {
+  const filePath = path.join(PROJECTS_DIR, dirName, sessionFile);
+  if (!fs.existsSync(filePath)) throw new Error('Session not found');
+  const session = parseSessionCached(filePath);
+  const lim = Math.min(limit || MESSAGE_PAGE_SIZE, 500);
+  const off = Math.max(0, offset | 0);
+  const slice = session.messages.slice(off, off + lim);
+  return { messages: slice, nextOffset: off + slice.length, done: off + slice.length >= session.messages.length };
+}
+
+// Compact stub for the timeline/Gantt (no heavy text/thinking/tool inputs).
+function toTimelineStub(m) {
+  const content = Array.isArray(m.content) ? m.content : [];
+  const tools = content.filter(b => b && b.type === 'tool_use' && b.name).map(b => b.name);
+  let preview = null;
+  if (typeof m.content === 'string') preview = m.content.slice(0, 160);
+  else {
+    const t = content.find(b => b && b.type === 'text' && b.text);
+    if (t) preview = t.text.slice(0, 160);
+  }
+  return {
+    uuid: m.uuid,
+    type: m.type,
+    timestamp: m.timestamp,
+    isSidechain: m.isSidechain || false,
+    usage: m.usage ? { input_tokens: m.usage.input_tokens || 0, output_tokens: m.usage.output_tokens || 0 } : null,
+    tools,
+    preview,
+    model: m.model || null,
+    stopReason: m.stopReason || null,
+  };
+}
+
+// Aggregated tool-usage bucket for a single conversation (main thread only).
+function bucketFromMessages(messages) {
+  const b = { tools: {}, skills: {}, mcpServers: {}, mcpTools: {}, agents: {}, totalCalls: 0 };
+  for (const m of (messages || [])) {
+    if (m.type !== 'assistant') continue;
+    for (const block of (Array.isArray(m.content) ? m.content : [])) {
+      if (!block || block.type !== 'tool_use' || !block.name) continue;
+      b.totalCalls++;
+      const name = block.name;
+      if (name.startsWith('mcp__')) {
+        const parts = name.split('__');
+        const server = (parts[1] || '').replace(/^claude_ai_/, '').replace(/_/g, ' ') || '(unknown)';
+        b.mcpServers[server] = (b.mcpServers[server] || 0) + 1;
+        b.mcpTools[name] = (b.mcpTools[name] || 0) + 1;
+      } else if (name === 'Skill') {
+        const s = block.input?.skill || '(unknown)';
+        b.skills[s] = (b.skills[s] || 0) + 1;
+      } else {
+        b.tools[name] = (b.tools[name] || 0) + 1;
+      }
+    }
+  }
+  return b;
 }
 
 function getAgentDetail(dirName, sessionFile, agentId) {
   const sessionId = sessionFile.replace('.jsonl', '');
   const agentPath = path.join(PROJECTS_DIR, dirName, sessionId, 'subagents', agentId + '.jsonl');
   if (!fs.existsSync(agentPath)) throw new Error('Agent not found');
-  return parseSessionFile(agentPath, false);
+  return parseSessionCached(agentPath);
 }
 
 function getStatsCache() {
@@ -520,4 +639,4 @@ function getStatsCache() {
   try { return JSON.parse(fs.readFileSync(statsFile, 'utf8')); } catch { return null; }
 }
 
-module.exports = { getAllProjects, getSessionDetail, getAgentDetail, getStatsCache, getToolUsage, calcCost };
+module.exports = { getAllProjects, getSessionDetail, getSessionInsights, getSessionMessagesPage, getAgentDetail, getStatsCache, getToolUsage, calcCost };
