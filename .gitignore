@@ -1,3 +1,9 @@
 node_modules/
 *.log
 .DS_Store
+
+# AI-Led runtime (progress sidebar state)
+.ailed/
+.claude/
+.idea/
+memory
