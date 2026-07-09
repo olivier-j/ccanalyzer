@@ -6,6 +6,9 @@ const path = require('path');
 function loadSource(source) {
   const name = (source || process.env.CCANALYZER_SOURCE || 'claude').toLowerCase();
   if (name === 'opencode') return require('./sources/opencode');
+  if (name !== 'claude') {
+    console.warn(`Unknown source "${name}", falling back to "claude". Valid sources: claude, opencode.`);
+  }
   return require('./parser');
 }
 

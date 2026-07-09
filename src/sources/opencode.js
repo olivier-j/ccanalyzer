@@ -68,17 +68,6 @@ function parseJson(s) {
 // OpenCode stores reasoning tokens separately; the `output` bucket excludes them
 // (verified against real data: output=38, reasoning=598). Fold reasoning into the
 // output figure so token totals reflect what was actually generated.
-function usageFromTokens(t) {
-  t = t || {};
-  const cache = t.cache || {};
-  return {
-    input: t.input || 0,
-    output: (t.output || 0) + (t.reasoning || 0),
-    cache_write: cache.write || 0,
-    cache_read: cache.read || 0,
-  };
-}
-
 function usageFromSessionRow(s) {
   return {
     input: s.tokens_input || 0,
@@ -275,6 +264,7 @@ function buildTimelineAndTools(sessionId) {
     `SELECT message_id AS mid,
             json_extract(data,'$.type') AS type,
             json_extract(data,'$.tool') AS tool,
+            json_extract(data,'$.state.input.name') AS skillName,
             CASE WHEN json_extract(data,'$.tool') = 'task' THEN data ELSE NULL END AS taskdata
      FROM part WHERE session_id = ?`
   ).all(sessionId);
@@ -297,7 +287,11 @@ function buildTimelineAndTools(sessionId) {
       conv.mcpTools[c.full] = (conv.mcpTools[c.full] || 0) + 1;
       mcps.add(c.server);
     } else if (c.kind === 'skill') {
-      conv.skills['(skill)'] = (conv.skills['(skill)'] || 0) + 1;
+      // OpenCode invokes a skill via the `skill` tool with the skill name in
+      // state.input.name (e.g. "customize-opencode").
+      const sk = r.skillName || '(skill)';
+      conv.skills[sk] = (conv.skills[sk] || 0) + 1;
+      skills.add(sk);
     } else if (c.kind !== 'agent') {
       conv.tools[c.name] = (conv.tools[c.name] || 0) + 1;
     }
@@ -541,6 +535,10 @@ function getSessionInsights(dirName, sessionFile) {
 // One page of full message bodies for the scrollable list.
 function getSessionMessagesPage(dirName, sessionFile, offset, limit) {
   const sessionId = normalizeSessionId(sessionFile);
+  // Match the 404 behaviour of the other session routes instead of quietly
+  // returning an empty page for a bogus session id.
+  const exists = db().prepare(`SELECT 1 FROM session WHERE id = ? LIMIT 1`).get(sessionId);
+  if (!exists) throw new Error('Session not found');
   return getMessagePage(sessionId, offset, Math.min(limit || MESSAGE_PAGE_SIZE, 500));
 }
 
@@ -610,7 +608,9 @@ function computeToolUsage() {
 
   // Tool calls. json_extract keeps the payload small (tool outputs stay in SQLite).
   const toolRows = db().prepare(
-    `SELECT session_id AS sid, json_extract(data, '$.tool') AS tool
+    `SELECT session_id AS sid,
+            json_extract(data, '$.tool') AS tool,
+            json_extract(data, '$.state.input.name') AS skillName
      FROM part WHERE json_extract(data, '$.type') = 'tool'`
   ).all();
 
@@ -626,7 +626,8 @@ function computeToolUsage() {
       b.mcpServers[c.server] = (b.mcpServers[c.server] || 0) + 1;
       b.mcpTools[c.full] = (b.mcpTools[c.full] || 0) + 1;
     } else if (c.kind === 'skill') {
-      b.skills['(skill)'] = (b.skills['(skill)'] || 0) + 1;
+      const sk = r.skillName || '(skill)';
+      b.skills[sk] = (b.skills[sk] || 0) + 1;
     } else {
       b.tools[c.name] = (b.tools[c.name] || 0) + 1;
     }
