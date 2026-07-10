@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/), versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+- Add **OpenCode** as a selectable data source (`--source opencode` or
+  `CCANALYZER_SOURCE=opencode`). A source-adapter layer (`src/sources/opencode.js`)
+  reads OpenCode's local SQLite store (`opencode.db`) read-only and normalises it
+  onto the existing model, so the dashboard, session browser, Gantt timeline and
+  tool-usage views work unchanged. Costs use OpenCode's own per-message figures
+  (multi-provider accurate). Requires Node 22+ (`node:sqlite`) for this source;
+  the Claude Code source is unchanged and stays the default. Location is
+  auto-detected (`$XDG_DATA_HOME/opencode`) or set via `OPENCODE_DATA_DIR`.
+- Handle very large sessions (10k+ messages) without freezing:
+  - Session detail now ships only the **first page** of message bodies plus a
+    compact per-message **timeline**; the rest stream in on scroll via a new
+    `GET …/sessions/:file/messages?offset&limit` endpoint.
+  - The message list renders in batches (IntersectionObserver) with
+    `content-visibility` so off-screen messages cost nothing.
+  - The Gantt aggregates user/assistant rows into buckets past a threshold.
+  - OpenCode defers its heavy per-message timeline + tool aggregation to a
+    background `GET …/sessions/:file/insights` call so opening a huge session is
+    instant; the Claude parser gains a parse cache so pagination doesn't re-read
+    the JSONL on every page.
+
 ## [2.1.5] — 2026-07-07
 - Add a tool/skill/MCP usage dashboard: `src/parser.js` now aggregates tool,
   skill, and MCP invocations, surfaced in a new dashboard view in the frontend.

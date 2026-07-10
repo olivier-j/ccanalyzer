@@ -14,7 +14,13 @@ const state = {
   toolsFilter: 'all',
   toolsMergeNs: false,
   usageCharts: {},
+  msgPaging: null,
+  msgObserver: null,
 };
+
+// Messages are rendered in batches and streamed in on scroll so a session with
+// thousands of messages doesn't build one giant DOM tree up front.
+const MSG_PAGE_SIZE = 150;
 
 /* ── Utils ── */
 const $ = id => document.getElementById(id);
@@ -48,7 +54,9 @@ function fmtMillions(n) {
 
 function modelShort(model) {
   if (!model || model === '<synthetic>') return '—';
-  return model.replace('claude-', '').replace(/-\d{8}$/, '');
+  // OpenCode reports models as "provider/model"; drop the provider prefix.
+  const bare = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model;
+  return bare.replace('claude-', '').replace(/-\d{8}$/, '');
 }
 
 /* ── Theme ── */
@@ -796,22 +804,9 @@ function renderSessionDetail(session, dirName, file) {
   const concurrencySegments = hasAgents ? computeConcurrencySegments(agents) : [];
   const maxParallel = concurrencySegments.reduce((m, s) => Math.max(m, s.count), hasAgents ? 1 : 0);
 
-  // MCPs and skills pre-aggregated server-side (main + all subagents)
-  const mcpBar = session.sessionMcps?.length
-    ? `<div class="session-tools-bar">${session.sessionMcps.map(s => `<span class="usage-chip"><span class="tag-mcp">mcp</span>${escHtml(s)}</span>`).join('')}</div>`
-    : '';
-  const skillBar = session.sessionSkills?.length
-    ? `<div class="session-tools-bar">${session.sessionSkills.map(s => `<span class="usage-chip"><span class="tag-skill">skill</span>${escHtml(s)}</span>`).join('')}</div>`
-    : '';
-
-  // Per-conversation breakdown, computed client-side from the loaded main
-  // thread (subagent tool calls aren't in this payload — hence showAgents:false).
-  const convBucket = bucketFromMessages(session.messages);
-  const convToolsSection = convBucket.totalCalls > 0 ? `
-    <details class="conv-tools">
-      <summary>⚙ Tool usage — ${fmt(convBucket.totalCalls)} calls (excl. subagents)</summary>
-      <div style="padding-top:16px">${usageBreakdownHtml(convBucket, 'conv', { showAgents: false })}</div>
-    </details>` : '';
+  // Insights (per-message timeline for the Gantt, aggregated tool bucket,
+  // MCP/skill chips) may be deferred (OpenCode) — they arrive via /insights.
+  const haveInsights = !!session.timeline;
 
   container.innerHTML = `
     <button class="back-btn" onclick="loadSessions('${encodeURIComponent(dirName)}')">← Sessions</button>
@@ -828,7 +823,7 @@ function renderSessionDetail(session, dirName, file) {
       ${cwd ? `<div class="meta-item"><div class="meta-label">Directory</div><div class="meta-value mono">${escHtml(cwd.replace('/home/olivier-j/', '~/'))}</div></div>` : ''}
       ${gitBranch && gitBranch !== 'HEAD' ? `<div class="meta-item"><div class="meta-label">Branch</div><div class="meta-value mono" style="color:var(--green)">${escHtml(gitBranch)}</div></div>` : ''}
     </div>
-    ${mcpBar}${skillBar}
+    <div id="session-chips">${haveInsights ? sessionChipsHtml(session) : ''}</div>
 
     <div class="token-bar">
       <div class="token-item"><div class="token-label">Input</div><div class="token-value input">${fmt(totalUsage.input)}</div></div>
@@ -846,12 +841,12 @@ function renderSessionDetail(session, dirName, file) {
     </div>
     <div id="timeline-section" style="display:${state.timelineOpen ? 'block' : 'none'}">
       <div id="timeline-content" class="timeline-wrap">
-        ${buildGanttContainer(session)}
+        ${haveInsights ? buildGanttContainer(session) : '<div class="usage-loading" style="padding:20px;text-align:center">Loading timeline…</div>'}
       </div>
       <div id="timeline-detail" class="tl-detail hidden"></div>
     </div>
 
-    ${convToolsSection}
+    <div id="conv-tools-slot">${haveInsights ? convToolsSectionHtml(session) : ''}</div>
 
     ${hasAgents || subAgentMessages > 0 ? `
     <div class="filter-bar">
@@ -864,16 +859,72 @@ function renderSessionDetail(session, dirName, file) {
       ${renderMessages(session.messages)}
     </div>`;
 
+  initMessagePaging();
   state.ganttChart = null;
-  if (state.timelineOpen) renderGanttChart(session, dirName, file);
 
-  // Charts init at width 0 inside the collapsed <details>; size them on expand.
-  if (convBucket.totalCalls > 0) {
-    mountUsageBreakdown(convBucket, 'conv', { showAgents: false });
-    const details = container.querySelector('.conv-tools');
-    details?.addEventListener('toggle', () => {
-      if (details.open) (state.usageCharts.conv || []).forEach(c => c.resize());
-    });
+  if (haveInsights) {
+    if (state.timelineOpen) renderGanttChart(session, dirName, file);
+    mountConvToolsUi(session);
+  } else {
+    loadSessionInsights(dirName, file);
+  }
+}
+
+function sessionChipsHtml(session) {
+  const mcpBar = session.sessionMcps?.length
+    ? `<div class="session-tools-bar">${session.sessionMcps.map(s => `<span class="usage-chip"><span class="tag-mcp">mcp</span>${escHtml(s)}</span>`).join('')}</div>`
+    : '';
+  const skillBar = session.sessionSkills?.length
+    ? `<div class="session-tools-bar">${session.sessionSkills.map(s => `<span class="usage-chip"><span class="tag-skill">skill</span>${escHtml(s)}</span>`).join('')}</div>`
+    : '';
+  return mcpBar + skillBar;
+}
+
+function convToolsSectionHtml(session) {
+  const convBucket = session.convTools || bucketFromMessages(session.messages);
+  if (!convBucket || convBucket.totalCalls <= 0) return '';
+  return `
+    <details class="conv-tools">
+      <summary>⚙ Tool usage — ${fmt(convBucket.totalCalls)} calls (excl. subagents)</summary>
+      <div style="padding-top:16px">${usageBreakdownHtml(convBucket, 'conv', { showAgents: false })}</div>
+    </details>`;
+}
+
+// Mount the conversation tool-usage charts (they init at width 0 inside the
+// collapsed <details>, so size them on expand).
+function mountConvToolsUi(session) {
+  const convBucket = session.convTools || bucketFromMessages(session.messages);
+  if (!convBucket || convBucket.totalCalls <= 0) return;
+  mountUsageBreakdown(convBucket, 'conv', { showAgents: false });
+  const details = document.querySelector('.conv-tools');
+  details?.addEventListener('toggle', () => {
+    if (details.open) (state.usageCharts.conv || []).forEach(c => c.resize());
+  });
+}
+
+// Fetch the deferred insights (timeline + tool bucket + enriched agents) and
+// fill in the Gantt, tool panel and MCP/skill chips once they arrive.
+async function loadSessionInsights(dirName, file) {
+  const cs = state.currentSession;
+  if (!cs) return;
+  try {
+    const ins = await api(`/api/projects/${encodeURIComponent(cs.apiDirName)}/sessions/${encodeURIComponent(cs.file)}/insights`);
+    if (state.currentSession !== cs) return; // navigated away while loading
+    const session = cs.session;
+    session.timeline = ins.timeline || [];
+    session.convTools = ins.convTools || null;
+    session.sessionMcps = ins.sessionMcps || [];
+    session.sessionSkills = ins.sessionSkills || [];
+    if (ins.agents && ins.agents.length) session.agents = ins.agents;
+
+    const chips = $('session-chips'); if (chips) chips.innerHTML = sessionChipsHtml(session);
+    const slot = $('conv-tools-slot'); if (slot) slot.innerHTML = convToolsSectionHtml(session);
+    const tc = $('timeline-content'); if (tc) tc.innerHTML = buildGanttContainer(session);
+    mountConvToolsUi(session);
+    if (state.timelineOpen) renderGanttChart(session, dirName, file);
+  } catch (e) {
+    const tc = $('timeline-content');
+    if (tc) tc.innerHTML = `<div class="usage-loading" style="padding:20px;color:var(--red)">Timeline unavailable: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -888,8 +939,10 @@ function toggleTimeline(dirName, file) {
   if (toggle) toggle.classList.toggle('open', state.timelineOpen);
 
   if (state.timelineOpen) {
+    const session = state.currentSession?.session;
+    if (!session || !session.timeline) return; // insights still loading; placeholder shown
     if (!state.ganttChart) {
-      renderGanttChart(state.currentSession.session, dirName, file);
+      renderGanttChart(session, dirName, file);
     } else {
       state.ganttChart.resize();
     }
@@ -936,9 +989,21 @@ const GANTT_LABEL_W = 120;
 const GANTT_ROW_H = 36;
 const GANTT_TOP = 14;
 const GANTT_BOTTOM = 34;
+// Above this many user/assistant items, aggregate consecutive messages into
+// bucket bars so the timeline stays responsive on huge sessions.
+const GANTT_MAX_BARS = 250;
+
+function chunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
 
 function computeGanttData(session) {
-  const { messages, agents } = session;
+  const { agents } = session;
+  // Use the compact timeline (all messages) when present; fall back to the
+  // (possibly paged) full messages for the Claude source without a timeline.
+  const messages = session.timeline || session.messages || [];
   const timeMsgs = messages.filter(m => m.timestamp && (m.type === 'user' || m.type === 'assistant'));
   if (timeMsgs.length === 0) return { empty: 'No time data' };
 
@@ -967,40 +1032,64 @@ function computeGanttData(session) {
 
   const shapes = [];
 
-  // ── User ticks ──
+  // ── User ticks (bucketed when there are too many) ──
   const userMsgs = timeMsgs.filter(m => m.type === 'user');
-  for (const m of userMsgs) {
-    const t = new Date(m.timestamp).getTime();
+  const userGroups = userMsgs.length <= GANTT_MAX_BARS
+    ? userMsgs.map(m => [m])
+    : chunkArray(userMsgs, Math.ceil(userMsgs.length / GANTT_MAX_BARS));
+  for (const grp of userGroups) {
+    const t = new Date(grp[0].timestamp).getTime();
+    const bucket = grp.length > 1;
     shapes.push({
       kind: 'tick', catIndex: 0, x0: t, x1: t,
       color: '#fbbf24',
-      uuid: m.uuid || null,
-      tooltip: `<strong>User</strong> ${fmtTime(m.timestamp)}`,
+      uuid: grp[0].uuid || null,
+      tooltip: bucket
+        ? `<strong>${grp.length} user messages</strong><br>${fmtTime(grp[0].timestamp)} – ${fmtTime(grp[grp.length - 1].timestamp)}`
+        : `<strong>User</strong> ${fmtTime(grp[0].timestamp)}`,
     });
   }
 
-  // ── Main AI row background + bars ──
+  // ── Main AI row background + bars (bucketed when there are too many) ──
   shapes.push({ kind: 'rowBg', catIndex: 1, x0: tMin, x1: tMax, color: '#4f8ef7', opacity: 0.06 });
 
   const assistMsgs = timeMsgs.filter(m => m.type === 'assistant');
-  for (let i = 0; i < assistMsgs.length; i++) {
-    const m = assistMsgs[i];
-    const nextM = assistMsgs[i + 1];
-    const startMs = new Date(m.timestamp).getTime();
-    const endMs = nextM ? new Date(nextM.timestamp).getTime() : Math.min(startMs + 30000, tMax);
+  const assistGroups = assistMsgs.length <= GANTT_MAX_BARS
+    ? assistMsgs.map(m => [m])
+    : chunkArray(assistMsgs, Math.ceil(assistMsgs.length / GANTT_MAX_BARS));
 
-    const content = Array.isArray(m.content) ? m.content : [];
-    const tools = content.filter(c => c && c.type === 'tool_use');
-    const hasAgentTool = tools.some(t => t.name === 'Agent');
+  for (let gi = 0; gi < assistGroups.length; gi++) {
+    const grp = assistGroups[gi];
+    const nextGrp = assistGroups[gi + 1];
+    const startMs = new Date(grp[0].timestamp).getTime();
+    const endMs = nextGrp
+      ? new Date(nextGrp[0].timestamp).getTime()
+      : Math.min(new Date(grp[grp.length - 1].timestamp).getTime() + 30000, tMax);
+
+    let inTok = 0, outTok = 0, hasAgentTool = false;
+    const toolNames = [];
+    for (const m of grp) {
+      if (m.usage) { inTok += m.usage.input_tokens || 0; outTok += m.usage.output_tokens || 0; }
+      // timeline stubs carry `tools` (names); full messages carry `content`.
+      const names = m.tools || (Array.isArray(m.content)
+        ? m.content.filter(c => c && c.type === 'tool_use').map(c => c.name) : []);
+      for (const n of names) { toolNames.push(n); if (n === 'Agent') hasAgentTool = true; }
+    }
+    const bucket = grp.length > 1;
     const color = hasAgentTool ? '#a78bfa' : '#4f8ef7';
-    const label = tools.slice(0, 2).map(t => t.name.replace(/([A-Z])/g, ' $1').trim()).join(', ');
+    const label = bucket
+      ? `${grp.length}×`
+      : toolNames.slice(0, 2).map(n => n.replace(/([A-Z])/g, ' $1').trim()).join(', ');
+    const tooltip = bucket
+      ? `<strong>${grp.length} assistant messages</strong><br>${fmtTime(grp[0].timestamp)} – ${fmtTime(grp[grp.length - 1].timestamp)}<br>in:${fmt(inTok)} out:${fmt(outTok)}${toolNames.length ? `<br>${fmt(toolNames.length)} tool calls` : ''}`
+      : `<strong>Assistant</strong> ${fmtTime(grp[0].timestamp)}${toolNames.length ? `<br><span style="color:#a78bfa">${escHtml(toolNames.join(', '))}</span>` : ''}${grp[0].usage ? `<br>in:${fmt(inTok)} out:${fmt(outTok)}` : ''}`;
 
     shapes.push({
       kind: 'bar', catIndex: 1, x0: startMs, x1: endMs,
       color, opacity: 0.85, minWidth: 4,
-      uuid: m.uuid || null,
-      label, labelMinWidth: 50,
-      tooltip: `<strong>Assistant</strong> ${fmtTime(m.timestamp)}${tools.length ? `<br><span style="color:#a78bfa">${escHtml(tools.map(t => t.name).join(', '))}</span>` : ''}${m.usage ? `<br>in:${fmt(m.usage.input_tokens)} out:${fmt(m.usage.output_tokens)}` : ''}`,
+      uuid: grp[0].uuid || null,
+      label, labelMinWidth: bucket ? 24 : 50,
+      tooltip,
     });
   }
 
@@ -1170,44 +1259,62 @@ function renderGanttChart(session, dirName, file) {
 function showTimelineMessageDetail(session, uuid) {
   const panel = $('timeline-detail');
   if (!panel) return;
-  const msg = session.messages.find(m => m.uuid === uuid);
+  // Prefer a fully-loaded message (rich content). On huge sessions the message
+  // may not be paged in yet — fall back to the compact timeline stub.
+  const full = (state.msgPaging?.loaded || session.messages || []).find(m => m.uuid === uuid);
+  const stub = full ? null : (session.timeline || []).find(m => m.uuid === uuid);
+  const msg = full || stub;
   if (!msg) return;
 
   const isUser = msg.type === 'user';
   const ts = msg.timestamp ? `${fmtDate(msg.timestamp)} ${fmtTime(msg.timestamp)}` : '';
-  const content = Array.isArray(msg.content) ? msg.content : (typeof msg.content === 'string' ? [{ type: 'text', text: msg.content }] : []);
-  const tools = content.filter(b => b?.type === 'tool_use');
-  const texts = content.filter(b => b?.type === 'text').map(b => b.text).join('\n');
-  const toolResults = content.filter(b => b?.type === 'tool_result');
 
   let body = '';
-  if (isUser) {
-    if (toolResults.length > 0) {
-      body = toolResults.map(tr => {
-        const rc = Array.isArray(tr.content) ? tr.content.map(c => c.text || '').join('\n') : (tr.content || '');
-        return `<div class="tool-call" style="${tr.is_error ? 'border-color:var(--red)' : ''}">
-          <div class="tool-name" style="color:${tr.is_error ? 'var(--red)' : 'var(--teal)'}">↩ result${tr.is_error ? ' (error)' : ''}</div>
-          <div class="tool-input">${escHtml(rc.slice(0, 800))}</div>
+  if (full) {
+    const content = Array.isArray(msg.content) ? msg.content : (typeof msg.content === 'string' ? [{ type: 'text', text: msg.content }] : []);
+    const tools = content.filter(b => b?.type === 'tool_use');
+    const texts = content.filter(b => b?.type === 'text').map(b => b.text).join('\n');
+    const toolResults = content.filter(b => b?.type === 'tool_result');
+    if (isUser) {
+      if (toolResults.length > 0) {
+        body = toolResults.map(tr => {
+          const rc = Array.isArray(tr.content) ? tr.content.map(c => c.text || '').join('\n') : (tr.content || '');
+          return `<div class="tool-call" style="${tr.is_error ? 'border-color:var(--red)' : ''}">
+            <div class="tool-name" style="color:${tr.is_error ? 'var(--red)' : 'var(--teal)'}">↩ result${tr.is_error ? ' (error)' : ''}</div>
+            <div class="tool-input">${escHtml(rc.slice(0, 800))}</div>
+          </div>`;
+        }).join('');
+      } else if (texts) {
+        body = `<div class="msg-text">${escHtml(texts)}</div>`;
+      }
+    } else {
+      if (texts) body += `<div class="msg-text" style="margin-bottom:${tools.length ? '12px' : '0'}">${escHtml(texts.slice(0, 1000))}</div>`;
+      if (tools.length) {
+        body += tools.map(t => {
+          const preview = getToolInputPreview(t.name, t.input);
+          return `<div class="tool-call">
+            <div class="tool-name">⚙ ${escHtml(t.name)}${preview ? `<span style="color:var(--text3);font-weight:400;margin-left:8px">${escHtml(preview.slice(0, 80))}</span>` : ''}</div>
+          </div>`;
+        }).join('');
+      }
+      if (msg.usage) {
+        body += `<div class="usage-inline">
+          <span class="usage-chip">in: <span class="in">${fmt(msg.usage.input_tokens)}</span></span>
+          <span class="usage-chip">out: <span class="out">${fmt(msg.usage.output_tokens)}</span></span>
+          ${msg.usage.cache_read_input_tokens ? `<span class="usage-chip">cache r: <span class="cr">${fmt(msg.usage.cache_read_input_tokens)}</span></span>` : ''}
         </div>`;
-      }).join('');
-    } else if (texts) {
-      body = `<div class="msg-text">${escHtml(texts)}</div>`;
+      }
     }
   } else {
-    if (texts) body += `<div class="msg-text" style="margin-bottom:${tools.length ? '12px' : '0'}">${escHtml(texts.slice(0, 1000))}</div>`;
-    if (tools.length) {
-      body += tools.map(t => {
-        const preview = getToolInputPreview(t.name, t.input);
-        return `<div class="tool-call">
-          <div class="tool-name">⚙ ${escHtml(t.name)}${preview ? `<span style="color:var(--text3);font-weight:400;margin-left:8px">${escHtml(preview.slice(0, 80))}</span>` : ''}</div>
-        </div>`;
-      }).join('');
+    // Compact stub view.
+    if (stub.preview) body += `<div class="msg-text">${escHtml(stub.preview)}${stub.preview.length >= 160 ? '…' : ''}</div>`;
+    if (stub.tools?.length) {
+      body += stub.tools.map(n => `<div class="tool-call"><div class="tool-name">⚙ ${escHtml(n)}</div></div>`).join('');
     }
-    if (msg.usage) {
+    if (stub.usage) {
       body += `<div class="usage-inline">
-        <span class="usage-chip">in: <span class="in">${fmt(msg.usage.input_tokens)}</span></span>
-        <span class="usage-chip">out: <span class="out">${fmt(msg.usage.output_tokens)}</span></span>
-        ${msg.usage.cache_read_input_tokens ? `<span class="usage-chip">cache r: <span class="cr">${fmt(msg.usage.cache_read_input_tokens)}</span></span>` : ''}
+        <span class="usage-chip">in: <span class="in">${fmt(stub.usage.input_tokens)}</span></span>
+        <span class="usage-chip">out: <span class="out">${fmt(stub.usage.output_tokens)}</span></span>
       </div>`;
     }
   }
@@ -1463,35 +1570,112 @@ function closeAgentModal() {
 function setMsgFilter(filter, dirNameEnc, fileEnc) {
   state.msgFilter = filter;
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === filter));
-  if (state.currentSession) {
-    $('messages-list').innerHTML = renderMessages(state.currentSession.session.messages);
+  const P = state.msgPaging;
+  if (P) {
+    // Re-render from the already-loaded messages with the new filter; keep the
+    // fetch cursor (loaded/nextOffset/done) so we don't refetch pages.
+    P.cursor = 0;
+    P.activeAgent = null;
+    $('messages-list').innerHTML = renderNextMsgBatch() + '<div id="msg-sentinel" class="msg-sentinel"></div>';
+    initMessagePaging();
   }
 }
 
+// Initial render of the message list. `messages` is the first page; further
+// pages are fetched from the server on scroll. session paging metadata (from
+// getSessionDetail) tells us where to continue.
 function renderMessages(messages, ctx) {
-  const filtered = messages.filter(m => {
-    if (state.msgFilter === 'main') return !m.isSidechain;
-    return true;
-  });
-  if (!filtered.length) return '<div class="empty"><p>No messages</p></div>';
+  const session = state.currentSession?.session;
+  state.msgPaging = {
+    ctx: ctx || null,
+    loaded: (messages || []).slice(),
+    cursor: 0,
+    activeAgent: null,
+    nextOffset: session?.messageNextOffset ?? (messages || []).length,
+    done: session?.messagesDone ?? true,
+    fetching: false,
+  };
+  const total = session?.messageCount ?? (messages || []).length;
+  if (!total) return '<div class="empty"><p>No messages</p></div>';
+  const firstBatch = renderNextMsgBatch();
+  return `${firstBatch}<div id="msg-sentinel" class="msg-sentinel"></div>`;
+}
 
-  // Track active skill/agent context across messages
-  let activeAgent = null;
-  return filtered.map((m, i) => {
+// Render up to MSG_PAGE_SIZE *visible* messages from `loaded` starting at the
+// cursor. activeAgent accumulates across every message (even filtered-out ones).
+function renderNextMsgBatch() {
+  const P = state.msgPaging;
+  if (!P) return '';
+  let html = '';
+  let count = 0;
+  while (count < MSG_PAGE_SIZE && P.cursor < P.loaded.length) {
+    const m = P.loaded[P.cursor];
     if (m.type === 'assistant') {
-      const content = Array.isArray(m.content) ? m.content : [];
-      for (const block of content) {
+      for (const block of (Array.isArray(m.content) ? m.content : [])) {
         if (!block || block.type !== 'tool_use') continue;
         if (block.name === 'Skill') {
-          activeAgent = { kind: 'skill', name: block.input?.skill || '?' };
+          P.activeAgent = { kind: 'skill', name: block.input?.skill || '?' };
         } else if (block.name === 'Agent') {
           const name = block.input?.description || block.input?.subagent_type || 'agent';
-          activeAgent = { kind: 'agent', name: name.slice(0, 40) };
+          P.activeAgent = { kind: 'agent', name: name.slice(0, 40) };
         }
       }
     }
-    return renderMessage(m, i, ctx, activeAgent);
-  }).join('');
+    const visible = state.msgFilter === 'main' ? !m.isSidechain : true;
+    if (visible) { html += renderMessage(m, P.cursor, P.ctx, P.activeAgent); count++; }
+    P.cursor++;
+  }
+  return html;
+}
+
+function msgHasMore() {
+  const P = state.msgPaging;
+  return !!P && (P.cursor < P.loaded.length || !P.done);
+}
+
+// Wire an IntersectionObserver on the sentinel so batches stream in (and further
+// server pages are fetched) as the user scrolls near the bottom.
+function initMessagePaging() {
+  if (state.msgObserver) { state.msgObserver.disconnect(); state.msgObserver = null; }
+  const sentinel = $('msg-sentinel');
+  const P = state.msgPaging;
+  if (!sentinel || !P) return;
+
+  const updateSentinel = () => { sentinel.textContent = msgHasMore() ? 'Loading more…' : ''; };
+  updateSentinel();
+
+  const loadMore = async () => {
+    if (!state.msgPaging || state.msgPaging !== P || P.fetching) return;
+    // 1) Render already-loaded messages first.
+    if (P.cursor < P.loaded.length) {
+      sentinel.insertAdjacentHTML('beforebegin', renderNextMsgBatch());
+      updateSentinel();
+      return;
+    }
+    // 2) Nothing left to render and nothing left to fetch → done.
+    if (P.done) { state.msgObserver?.disconnect(); sentinel.textContent = ''; return; }
+    // 3) Fetch the next server page, append, render.
+    P.fetching = true;
+    sentinel.textContent = 'Loading…';
+    try {
+      const cs = state.currentSession;
+      const data = await api(`/api/projects/${encodeURIComponent(cs.apiDirName)}/sessions/${encodeURIComponent(cs.file)}/messages?offset=${P.nextOffset}&limit=${MSG_PAGE_SIZE}`);
+      P.loaded.push(...(data.messages || []));
+      P.nextOffset = data.nextOffset ?? P.nextOffset;
+      P.done = !!data.done;
+      if (state.msgPaging === P) sentinel.insertAdjacentHTML('beforebegin', renderNextMsgBatch());
+    } catch (e) {
+      sentinel.textContent = `Failed to load more: ${e.message}`;
+    } finally {
+      P.fetching = false;
+      if (state.msgPaging === P) updateSentinel();
+    }
+  };
+
+  state.msgObserver = new IntersectionObserver(entries => {
+    if (entries.some(e => e.isIntersecting)) loadMore();
+  }, { rootMargin: '800px 0px' });
+  state.msgObserver.observe(sentinel);
 }
 
 function renderMessage(m, i, ctx, activeAgent) {

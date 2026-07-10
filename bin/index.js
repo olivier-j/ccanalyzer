@@ -11,8 +11,11 @@ const hIdx = args.indexOf('--host');
 const userHost = hIdx !== -1 && args[hIdx + 1] ? args[hIdx + 1] : null;
 const host = userHost || process.env.HOST || '127.0.0.1';
 
-startServer(port, host).then(({ url }) => {
-  console.log(`\n  ccanalyzer running at ${url}\n`);
+const sIdx = args.indexOf('--source');
+const source = (sIdx !== -1 && args[sIdx + 1] ? args[sIdx + 1] : process.env.CCANALYZER_SOURCE) || 'claude';
+
+startServer(port, host, source).then(({ url }) => {
+  console.log(`\n  ccanalyzer running at ${url}  (source: ${source})\n`);
   try {
     import('open').then(m => m.default(url)).catch(() => {});
   } catch {}
