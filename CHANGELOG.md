@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/), versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [2.2.0] — 2026-07-10
 - Add **OpenCode** as a selectable data source (`--source opencode` or
   `CCANALYZER_SOURCE=opencode`). A source-adapter layer (`src/sources/opencode.js`)
   reads OpenCode's local SQLite store (`opencode.db`) read-only and normalises it
