@@ -138,6 +138,47 @@ function messageCountsBySession() {
   return map;
 }
 
+// Number of lines in a string (newline count + 1), 0 for empty/non-string.
+function lineCount(t) {
+  if (typeof t !== 'string' || t.length === 0) return 0;
+  let n = 1;
+  for (let i = 0; i < t.length; i++) if (t.charCodeAt(i) === 10) n++;
+  return n;
+}
+
+// Lines authored via file-writing tools, summed per session — parity with the
+// Claude parser's linesGenerated. OpenCode tool names are lower-case and edits
+// use camelCase newString (older rows may use new_string). Best-effort: unknown
+// shapes contribute 0 rather than throwing.
+function linesBySession() {
+  const map = new Map();
+  let rows;
+  try {
+    rows = db().prepare(
+      `SELECT session_id AS sid,
+              lower(json_extract(data,'$.tool')) AS tool,
+              json_extract(data,'$.state.input.content') AS content,
+              json_extract(data,'$.state.input.newString') AS newString,
+              json_extract(data,'$.state.input.new_string') AS new_string,
+              json_extract(data,'$.state.input.edits') AS edits
+       FROM part WHERE json_extract(data,'$.type') = 'tool'`
+    ).all();
+  } catch { return map; }
+  for (const r of rows) {
+    let n = 0;
+    if (r.tool === 'write') n = lineCount(r.content);
+    else if (r.tool === 'edit') n = lineCount(r.newString || r.new_string);
+    else if (r.tool === 'multiedit') {
+      try {
+        const edits = r.edits ? JSON.parse(r.edits) : [];
+        if (Array.isArray(edits)) n = edits.reduce((s, e) => s + lineCount(e && (e.newString || e.new_string)), 0);
+      } catch { /* leave n = 0 */ }
+    }
+    if (n) map.set(r.sid, (map.get(r.sid) || 0) + n);
+  }
+  return map;
+}
+
 // Build the normalised message list (with reconstructed content[]) for a session.
 // Reconstruct one message's content[] from its parts.
 function partsToContent(parts) {
@@ -344,6 +385,7 @@ function getAllProjects() {
 
   const sessions = allSessions();
   const counts = messageCountsBySession();
+  const lines = linesBySession();
 
   // Group child sessions (subagents) under their parent.
   const childrenByParent = new Map();
@@ -370,6 +412,7 @@ function getAllProjects() {
         path: worktree,
         sessionCount: 0,
         totalMessages: 0,
+        linesGenerated: 0,
         totalCost: 0,
         totalUsage: newUsage(),
         firstActivity: null,
@@ -387,11 +430,13 @@ function getAllProjects() {
     let cardCost = s.cost || 0;
     const ownCount = counts.get(s.id) || 0;
     let subCount = 0;
+    let cardLines = lines.get(s.id) || 0;
     const kids = childrenByParent.get(s.id) || [];
     for (const k of kids) {
       addUsage(cardUsage, usageFromSessionRow(k));
       cardCost += k.cost || 0;
       subCount += counts.get(k.id) || 0;
+      cardLines += lines.get(k.id) || 0;
     }
 
     const firstTs = MS(s.time_created);
@@ -410,6 +455,7 @@ function getAllProjects() {
       messageCount: ownCount + subCount,
       mainAgentMessages: ownCount,
       subAgentMessages: subCount,
+      linesGenerated: cardLines,
       totalUsage: cardUsage,
       totalCost: cardCost,
       hasSubagents: kids.length > 0,
@@ -417,6 +463,7 @@ function getAllProjects() {
 
     P.sessionCount += 1;
     P.totalMessages += ownCount + subCount;
+    P.linesGenerated += cardLines;
     P.totalCost += cardCost;
     addUsage(P.totalUsage, cardUsage);
     if (firstTs && (!P.firstActivity || firstTs < P.firstActivity)) P.firstActivity = firstTs;

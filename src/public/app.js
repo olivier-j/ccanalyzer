@@ -8,6 +8,7 @@ const state = {
   ganttChart: null,
   ganttData: null,
   msgFilter: 'all',
+  dateFilter: 'all',
   timelineOpen: false,
   toolUsage: null,
   toolUsagePromise: null,
@@ -268,48 +269,133 @@ async function loadDashboard() {
     } finally { show(false); }
   }
 
-  const projects = state.projects;
+  container.innerHTML = `
+    <div class="page-header dashboard-header">
+      <div>
+        <h1>Dashboard</h1>
+        <div class="subtitle">Overview of all your Claude Code sessions</div>
+      </div>
+      <div class="tools-filter date-filter">
+        <span>Période</span>
+        <select id="dash-date-filter">
+          ${DATE_FILTERS.map(f => `<option value="${f.key}"${state.dateFilter === f.key ? ' selected' : ''}>${f.label}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="stats-grid" id="dash-stats"></div>
+    <div class="chart-section" style="margin-bottom:28px">
+      <h2>Daily activity</h2>
+      <div class="chart-container" id="activity-chart"></div>
+    </div>
+    <div class="section-title" style="margin-bottom:12px" id="dash-projects-title">Projects</div>
+    <div class="table-wrap" id="projects-table"></div>`;
+
+  const sel = $('dash-date-filter');
+  if (sel) sel.addEventListener('change', e => { state.dateFilter = e.target.value; renderDashboardBody(); });
+
+  renderDashboardBody();
+}
+
+// Date-range presets for the dashboard filter (top-right).
+const DATE_FILTERS = [
+  { key: 'week', label: 'Cette semaine' },
+  { key: 'month', label: 'Ce mois-ci' },
+  { key: '3m', label: '3 derniers mois' },
+  { key: '6m', label: '6 derniers mois' },
+  { key: 'all', label: 'Depuis toujours' },
+];
+
+// Lower bound (Date) for a filter key; null means no bound (all time). Weeks
+// start Monday; "this month" is the 1st; 3m/6m are rolling windows from now.
+function dateFilterCutoff(key) {
+  const now = new Date();
+  switch (key) {
+    case 'week': {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const dow = (d.getDay() + 6) % 7; // Monday = 0
+      d.setDate(d.getDate() - dow);
+      return d;
+    }
+    case 'month': return new Date(now.getFullYear(), now.getMonth(), 1);
+    case '3m': { const d = new Date(now); d.setMonth(d.getMonth() - 3); return d; }
+    case '6m': { const d = new Date(now); d.setMonth(d.getMonth() - 6); return d; }
+    case 'all':
+    default: return null;
+  }
+}
+
+// Re-aggregate projects over sessions active since `cutoff` (anchored on each
+// session's last activity). Projects with no session in the window drop out.
+function projectsInWindow(projects, cutoff) {
+  if (!cutoff) return projects;
+  const cut = cutoff.getTime();
+  const out = [];
+  for (const p of projects) {
+    const sessions = (p.sessions || []).filter(s => {
+      const iso = s.lastTimestamp || s.firstTimestamp;
+      const t = iso ? new Date(iso).getTime() : NaN;
+      return !isNaN(t) && t >= cut;
+    });
+    if (!sessions.length) continue;
+
+    const totalUsage = { input: 0, output: 0, cache_write: 0, cache_read: 0 };
+    let totalCost = 0, totalMessages = 0, linesGenerated = 0, firstActivity = null, lastActivity = null;
+    for (const s of sessions) {
+      totalCost += s.totalCost || 0;
+      totalMessages += s.messageCount || 0;
+      linesGenerated += s.linesGenerated || 0;
+      totalUsage.input += s.totalUsage.input || 0;
+      totalUsage.output += s.totalUsage.output || 0;
+      totalUsage.cache_write += s.totalUsage.cache_write || 0;
+      totalUsage.cache_read += s.totalUsage.cache_read || 0;
+      if (s.firstTimestamp && (!firstActivity || new Date(s.firstTimestamp) < new Date(firstActivity))) firstActivity = s.firstTimestamp;
+      if (s.lastTimestamp && (!lastActivity || new Date(s.lastTimestamp) > new Date(lastActivity))) lastActivity = s.lastTimestamp;
+    }
+    out.push({ ...p, sessions, sessionCount: sessions.length, totalMessages, linesGenerated, totalCost, totalUsage, firstActivity, lastActivity });
+  }
+  return out;
+}
+
+// Render the filter-dependent parts (stat cards, chart, project table) from the
+// current state.dateFilter. Called on first paint and on every filter change.
+function renderDashboardBody() {
+  const cutoff = dateFilterCutoff(state.dateFilter);
+  const projects = projectsInWindow(state.projects, cutoff);
+
   const totalSessions = projects.reduce((s, p) => s + p.sessionCount, 0);
   const totalMsgs = projects.reduce((s, p) => s + p.totalMessages, 0);
+  const totalLines = projects.reduce((s, p) => s + (p.linesGenerated || 0), 0);
   const totalCost = projects.reduce((s, p) => s + p.totalCost, 0);
   const totalInput = projects.reduce((s, p) => s + p.totalUsage.input, 0);
   const totalOutput = projects.reduce((s, p) => s + p.totalUsage.output, 0);
   const totalCacheW = projects.reduce((s, p) => s + p.totalUsage.cache_write, 0);
   const totalCacheR = projects.reduce((s, p) => s + p.totalUsage.cache_read, 0);
 
-  container.innerHTML = `
-    <div class="page-header">
-      <h1>Dashboard</h1>
-      <div class="subtitle">Overview of all your Claude Code sessions</div>
+  $('dash-stats').innerHTML = `
+    <div class="stat-card accent"><div class="label">Projects</div><div class="value">${fmt(projects.length)}</div></div>
+    <div class="stat-card"><div class="label">Sessions</div><div class="value">${fmt(totalSessions)}</div></div>
+    <div class="stat-card"><div class="label">Messages</div><div class="value">${fmt(totalMsgs)}</div></div>
+    <div class="stat-card purple"><div class="label">Lines generated</div><div class="value">${fmt(totalLines)}</div></div>
+    <div class="stat-card green"><div class="label">Estimated cost</div><div class="value">${fmtCost(totalCost)}</div></div>
+    <div class="stat-card">
+      <div class="label">Input tokens</div>
+      <div class="value">${fmtMillions(totalInput)}</div>
+      <div class="sub">+ ${fmtMillions(totalCacheR)} cache reads</div>
     </div>
-    <div class="stats-grid">
-      <div class="stat-card accent"><div class="label">Projects</div><div class="value">${fmt(projects.length)}</div></div>
-      <div class="stat-card"><div class="label">Sessions</div><div class="value">${fmt(totalSessions)}</div></div>
-      <div class="stat-card"><div class="label">Messages</div><div class="value">${fmt(totalMsgs)}</div></div>
-      <div class="stat-card green"><div class="label">Estimated cost</div><div class="value">${fmtCost(totalCost)}</div></div>
-      <div class="stat-card">
-        <div class="label">Input tokens</div>
-        <div class="value">${fmtMillions(totalInput)}</div>
-        <div class="sub">+ ${fmtMillions(totalCacheR)} cache reads</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Output tokens</div>
-        <div class="value">${fmtMillions(totalOutput)}</div>
-        <div class="sub">${fmtMillions(totalCacheW)} cache writes</div>
-      </div>
-    </div>
-    <div class="chart-section" style="margin-bottom:28px">
-      <h2>Daily activity</h2>
-      <div class="chart-container" id="activity-chart"></div>
-    </div>
-    <div class="section-title" style="margin-bottom:12px">Projects <span style="font-weight:400;color:var(--text3)">(${projects.length})</span></div>
-    <div class="table-wrap" id="projects-table"></div>`;
+    <div class="stat-card">
+      <div class="label">Output tokens</div>
+      <div class="value">${fmtMillions(totalOutput)}</div>
+      <div class="sub">${fmtMillions(totalCacheW)} cache writes</div>
+    </div>`;
+
+  $('dash-projects-title').innerHTML = `Projects <span style="font-weight:400;color:var(--text3)">(${projects.length})</span>`;
 
   const projectColumns = [
     { label: 'Project', asc: true, sort: p => p.name?.toLowerCase(), render: p => `<td class="td-name">${escHtml(p.name)}</td>` },
     { label: 'Path', asc: true, sort: p => p.path?.toLowerCase(), render: p => `<td class="td-path" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(p.path)}</td>` },
     { label: 'Sessions', sort: p => p.sessionCount, render: p => `<td class="td-num">${fmt(p.sessionCount)}</td>` },
     { label: 'Messages', sort: p => p.totalMessages, render: p => `<td class="td-num">${fmt(p.totalMessages)}</td>` },
+    { label: 'Lines', sort: p => p.linesGenerated || 0, render: p => `<td class="td-num" style="color:var(--purple)">${fmt(p.linesGenerated || 0)}</td>` },
     { label: 'Input', sort: p => p.totalUsage.input, render: p => `<td class="td-num" style="color:var(--accent)">${fmtMillions(p.totalUsage.input)}</td>` },
     { label: 'Output', sort: p => p.totalUsage.output, render: p => `<td class="td-num" style="color:var(--green)">${fmtMillions(p.totalUsage.output)}</td>` },
     { label: 'Cost', sort: p => p.totalCost, render: p => `<td class="td-cost">${fmtCost(p.totalCost)}</td>` },
@@ -318,16 +404,28 @@ async function loadDashboard() {
   mountSortableTable($('projects-table'), projects, projectColumns,
     p => `onclick="loadSessions('${encodeURIComponent(p.dirName)}')"`);
 
-  initActivityChart();
+  const daily = filterDailyActivity(state.stats?.dailyActivity, cutoff);
+  initActivityChart(daily);
 }
 
-function initActivityChart() {
+// Keep only daily-activity buckets on/after the cutoff day (local date compare).
+function filterDailyActivity(daily, cutoff) {
+  if (!Array.isArray(daily)) return [];
+  if (!cutoff) return daily;
+  const y = cutoff.getFullYear();
+  const m = String(cutoff.getMonth() + 1).padStart(2, '0');
+  const d = String(cutoff.getDate()).padStart(2, '0');
+  const cutDay = `${y}-${m}-${d}`;
+  return daily.filter(x => x && x.date >= cutDay);
+}
+
+function initActivityChart(dailyOverride) {
   const el = document.getElementById('activity-chart');
   if (!el) return;
   if (state.activityChart) { state.activityChart.dispose(); state.activityChart = null; }
 
-  const daily = state.stats?.dailyActivity || [];
-  if (!daily.length) return;
+  const daily = dailyOverride || state.stats?.dailyActivity || [];
+  if (!daily.length) { el.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:24px 4px">Aucune activité sur la période sélectionnée.</div>'; return; }
 
   const sorted = [...daily].sort((a, b) => a.date.localeCompare(b.date));
   const chart = echarts.init(el);

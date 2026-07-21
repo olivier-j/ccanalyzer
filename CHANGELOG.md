@@ -3,6 +3,28 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/), versions follow [SemVer](https://semver.org/).
 
+## [2.3.0] — 2026-07-21
+- Add a **Lines generated** metric per project on the Dashboard: a new column in
+  the project table plus a summary stat card, counting lines Claude authored
+  through the `Write`, `Edit`, `MultiEdit` and `NotebookEdit` tools (produced
+  text, not net diff — a proxy for authoring volume). Computed per session in
+  `src/parser.js` and aggregated per project; the OpenCode source computes the
+  same metric from its tool parts for parity.
+- Add a **date-range filter** (top-right of the Dashboard): this week, this
+  month, last 3 months, last 6 months, all time. Stat cards, the project table
+  and the daily-activity chart all re-aggregate to the selected window. Filtering
+  is client-side over the sessions already loaded, so switching ranges is instant.
+- Fix the **Daily activity** chart freezing on an old date. It read Claude Code's
+  `~/.claude/stats-cache.json`, which Claude Code can stop regenerating (observed
+  stuck for weeks after a CC update), so the chart stopped days in the past even
+  though sessions kept coming. `src/parser.js` now computes `dailyActivity`
+  (per-day message / tool-call / session counts) directly from the session JSONL
+  — always current — and only falls back to the cached history for older days no
+  longer on disk. The computation dedups streamed assistant continuations like
+  the rest of the parser and is memoised on the same short TTL as the tool-usage
+  scan. Partial values written mid-day by Claude Code are replaced by the full
+  computed day on overlap.
+
 ## [2.2.0] — 2026-07-10
 - Add **OpenCode** as a selectable data source (`--source opencode` or
   `CCANALYZER_SOURCE=opencode`). A source-adapter layer (`src/sources/opencode.js`)

@@ -171,6 +171,19 @@ body {
 .page-header {
   margin-bottom: 28px;
 }
+.dashboard-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.date-filter {
+  margin-bottom: 0;
+}
+.date-filter select {
+  min-width: 170px;
+}
 .page-header h1 {
   font-size: 22px;
   font-weight: 700;

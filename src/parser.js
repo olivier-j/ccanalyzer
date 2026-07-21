@@ -38,6 +38,34 @@ function calcCost(usage, model) {
   );
 }
 
+// Number of lines in a string (newline count + 1), 0 for empty/non-string.
+function lineCount(t) {
+  if (typeof t !== 'string' || t.length === 0) return 0;
+  let n = 1;
+  for (let i = 0; i < t.length; i++) if (t.charCodeAt(i) === 10) n++;
+  return n;
+}
+
+// Lines "generated" by a single tool_use block: the code Claude wrote through a
+// file-authoring tool. Write ships the whole file; Edit/MultiEdit ship the
+// replacement text; NotebookEdit ships the new cell source. Read/Bash/etc. add
+// nothing. This measures produced text, not net diff (an Edit that shrinks a
+// file still counts its new_string) — a proxy for authoring volume, not LOC.
+function generatedLines(block) {
+  if (!block || block.type !== 'tool_use') return 0;
+  const input = block.input || {};
+  switch (block.name) {
+    case 'Write': return lineCount(input.content);
+    case 'Edit': return lineCount(input.new_string);
+    case 'NotebookEdit': return lineCount(input.new_source);
+    case 'MultiEdit':
+      return Array.isArray(input.edits)
+        ? input.edits.reduce((s, e) => s + lineCount(e && e.new_string), 0)
+        : 0;
+    default: return 0;
+  }
+}
+
 function decodePath(dirName) {
   return '/' + dirName.replace(/^-/, '').split('-').join('/');
 }
@@ -72,6 +100,7 @@ function parseSessionFile(filePath, lightMode = false) {
   let gitBranch = null;
   let mainAgentMessages = 0;
   let subAgentMessages = 0;
+  let linesGenerated = 0;
   // Map toolUseId → { timestamp, uuid } for agent spawn detection
   const toolUseMap = {};
   // Claude Code writes one JSONL line per content block (thinking/text/tool_use)
@@ -110,6 +139,12 @@ function parseSessionFile(filePath, lightMode = false) {
           totalCost += calcCost(usage, msg.model || model);
         }
         if (msg.id) lastAssistantMsgId = msg.id;
+        // Lines authored via Write/Edit tools. Each tool_use is on its own
+        // streamed line (never a continuation dup), so count unconditionally —
+        // needed in light mode too, since getAllProjects aggregates from it.
+        if (Array.isArray(msg.content)) {
+          for (const block of msg.content) linesGenerated += generatedLines(block);
+        }
         // Index tool_use IDs → for linking to spawned agents
         if (!lightMode && Array.isArray(msg.content)) {
           const refUuid = isContinuation && lastAssistantMessageRef ? lastAssistantMessageRef.uuid : entry.uuid;
@@ -165,6 +200,7 @@ function parseSessionFile(filePath, lightMode = false) {
     messageCount: lightMode ? (mainAgentMessages + subAgentMessages) : messages.length,
     mainAgentMessages,
     subAgentMessages,
+    linesGenerated,
     totalUsage,
     totalCost,
     messages: lightMode ? [] : messages,
@@ -244,6 +280,7 @@ function getAllProjects() {
 
     let totalCost = 0;
     let totalMessages = 0;
+    let totalLines = 0;
     let lastActivity = null;
     let firstActivity = null;
     const totalUsage = { input: 0, output: 0, cache_write: 0, cache_read: 0 };
@@ -256,6 +293,7 @@ function getAllProjects() {
         if (!firstCwd && session.cwd) firstCwd = session.cwd;
         totalCost += session.totalCost;
         totalMessages += session.messageCount;
+        totalLines += session.linesGenerated || 0;
         totalUsage.input += session.totalUsage.input;
         totalUsage.output += session.totalUsage.output;
         totalUsage.cache_write += session.totalUsage.cache_write;
@@ -287,6 +325,7 @@ function getAllProjects() {
           messageCount: session.messageCount,
           mainAgentMessages: session.mainAgentMessages,
           subAgentMessages: session.subAgentMessages,
+          linesGenerated: session.linesGenerated || 0,
           totalUsage: session.totalUsage,
           totalCost: session.totalCost,
           hasSubagents,
@@ -305,6 +344,7 @@ function getAllProjects() {
       parent.sessions.push(...sessions);
       parent.totalCost += totalCost;
       parent.totalMessages += totalMessages;
+      parent.linesGenerated += totalLines;
       parent.sessionCount += sessions.length;
       parent.totalUsage.input += totalUsage.input;
       parent.totalUsage.output += totalUsage.output;
@@ -326,6 +366,7 @@ function getAllProjects() {
         path: displayPath,
         sessionCount: sessions.length,
         totalMessages,
+        linesGenerated: totalLines,
         totalCost,
         totalUsage,
         firstActivity,
@@ -471,6 +512,116 @@ function computeToolUsage() {
   }
 
   return { projects: Array.from(byParent.values()) };
+}
+
+// ── daily activity (computed live from the JSONL) ──
+// Claude Code writes ~/.claude/stats-cache.json, but it can stop regenerating it
+// (observed frozen for weeks after a CC update). Rather than depend on that file
+// for the "Daily activity" chart, we compute per-day message/tool-call/session
+// counts straight from the session JSONL — always current — and only fall back
+// to the cached history for days no longer present on disk (rotated/pruned).
+//
+// Same scan cost as computeToolUsage(), so it's memoised on the same short TTL.
+let _dailyActivityCache = null;
+let _dailyActivityCacheAt = 0;
+const DAILY_ACTIVITY_TTL_MS = 60_000;
+
+function localDay(ts) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Accumulate one JSONL file's user/assistant messages and tool_use blocks into
+// per-day buckets. Mirrors parseSessionFile's continuation-dedup so a single
+// streamed assistant turn (split across lines sharing message.id) counts once.
+// sessionKey is the top-level session id (null for subagent files, whose parent
+// session already marks the day active — so subagents add messages/tools but
+// never inflate sessionCount).
+function accumulateDailyFromFile(filePath, byDay, sessionKey) {
+  let lastAssistantMsgId = null;
+  for (const entry of parseLines(filePath)) {
+    if (entry.type !== 'user' && entry.type !== 'assistant') continue;
+    const day = localDay(entry.timestamp);
+    if (!day) continue;
+
+    let bucket = byDay.get(day);
+    if (!bucket) { bucket = { messageCount: 0, toolCallCount: 0, sessions: new Set() }; byDay.set(day, bucket); }
+    if (sessionKey) bucket.sessions.add(sessionKey);
+
+    if (entry.type === 'assistant') {
+      const msg = entry.message || {};
+      const isContinuation = !!(msg.id && msg.id === lastAssistantMsgId);
+      if (!isContinuation) bucket.messageCount++;
+      if (msg.id) lastAssistantMsgId = msg.id;
+      // tool_use blocks each occupy their own streamed line, so no dedup needed.
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block && block.type === 'tool_use') bucket.toolCallCount++;
+        }
+      }
+    } else {
+      lastAssistantMsgId = null;
+      bucket.messageCount++;
+    }
+  }
+}
+
+function computeDailyActivity() {
+  if (!fs.existsSync(PROJECTS_DIR)) return [];
+  const byDay = new Map();
+
+  const projectDirs = fs.readdirSync(PROJECTS_DIR).filter(d => {
+    try { return fs.statSync(path.join(PROJECTS_DIR, d)).isDirectory(); } catch { return false; }
+  });
+
+  for (const dirName of projectDirs) {
+    const projectPath = path.join(PROJECTS_DIR, dirName);
+    let sessionFiles;
+    try { sessionFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl')); }
+    catch { continue; }
+
+    for (const sf of sessionFiles) {
+      const sessionId = sf.replace('.jsonl', '');
+      accumulateDailyFromFile(path.join(projectPath, sf), byDay, sessionId);
+
+      const subagentsDir = path.join(projectPath, sessionId, 'subagents');
+      if (!fs.existsSync(subagentsDir)) continue;
+      for (const f of fs.readdirSync(subagentsDir)) {
+        if (f.endsWith('.jsonl')) accumulateDailyFromFile(path.join(subagentsDir, f), byDay, null);
+      }
+    }
+  }
+
+  return Array.from(byDay.entries())
+    .map(([date, v]) => ({ date, messageCount: v.messageCount, toolCallCount: v.toolCallCount, sessionCount: v.sessions.size }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function getDailyActivity() {
+  if (_dailyActivityCache && Date.now() - _dailyActivityCacheAt < DAILY_ACTIVITY_TTL_MS) return _dailyActivityCache;
+  const result = computeDailyActivity();
+  _dailyActivityCache = result;
+  _dailyActivityCacheAt = Date.now();
+  return result;
+}
+
+// Cached history (from Claude Code) as the base, overlaid with freshly computed
+// days. Computed wins on overlap (it's live); the cache only fills in older days
+// no longer on disk. Either input may be missing.
+function mergeDailyActivity(cached, computed) {
+  const byDate = new Map();
+  for (const d of (Array.isArray(cached) ? cached : [])) {
+    if (d && d.date) byDate.set(d.date, d);
+  }
+  for (const d of (Array.isArray(computed) ? computed : [])) {
+    if (d && d.date) byDate.set(d.date, d);
+  }
+  return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 // Full (non-light) parse cache, keyed by path and invalidated by mtime+size.
@@ -635,8 +786,17 @@ function getAgentDetail(dirName, sessionFile, agentId) {
 
 function getStatsCache() {
   const statsFile = path.join(CLAUDE_DIR, 'stats-cache.json');
-  if (!fs.existsSync(statsFile)) return null;
-  try { return JSON.parse(fs.readFileSync(statsFile, 'utf8')); } catch { return null; }
+  let cached = null;
+  try { cached = JSON.parse(fs.readFileSync(statsFile, 'utf8')); } catch { cached = null; }
+
+  // Recompute dailyActivity from the JSONL so the chart stays current even when
+  // Claude Code stops refreshing stats-cache.json; keep the rest of the cache.
+  let computed = [];
+  try { computed = getDailyActivity(); } catch { computed = []; }
+  const dailyActivity = mergeDailyActivity(cached && cached.dailyActivity, computed);
+
+  if (!cached && !dailyActivity.length) return null;
+  return { ...(cached || {}), dailyActivity };
 }
 
 module.exports = { getAllProjects, getSessionDetail, getSessionInsights, getSessionMessagesPage, getAgentDetail, getStatsCache, getToolUsage, calcCost };
